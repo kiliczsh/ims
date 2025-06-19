@@ -1,3 +1,5 @@
+// Package redis provides Redis implementations for caching and session storage.
+// It implements the cache repository interface for high-performance data access.
 package redis
 
 import (

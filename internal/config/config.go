@@ -1,3 +1,5 @@
+// Package config provides configuration management for the IMS application.
+// It handles environment variable loading and validation using envconfig.
 package config
 
 import (

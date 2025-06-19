@@ -19,7 +19,7 @@ func TestNewHealthHandler(t *testing.T) {
 func TestHealthHandler_Handle_MethodNotAllowed(t *testing.T) {
 	handler := NewHealthHandler(nil, nil, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/health", nil)
+	req := httptest.NewRequest(http.MethodPost, "/health", http.NoBody)
 	rr := httptest.NewRecorder()
 
 	handler.Handle(rr, req)
@@ -32,7 +32,7 @@ func TestHealthHandler_Handle_MethodNotAllowed(t *testing.T) {
 func TestHealthHandler_Handle_BasicResponse(t *testing.T) {
 	handler := NewHealthHandler(nil, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
 	rr := httptest.NewRecorder()
 
 	handler.Handle(rr, req)
@@ -69,7 +69,7 @@ func TestHealthHandler_Handle_BasicResponse(t *testing.T) {
 func TestHealthHandler_Handle_ContentType(t *testing.T) {
 	handler := NewHealthHandler(nil, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
 	rr := httptest.NewRecorder()
 
 	handler.Handle(rr, req)
@@ -84,7 +84,7 @@ func TestHealthHandler_Handle_TimestampPresent(t *testing.T) {
 	handler := NewHealthHandler(nil, nil, nil)
 
 	beforeRequest := time.Now()
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
 	rr := httptest.NewRecorder()
 
 	handler.Handle(rr, req)

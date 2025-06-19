@@ -1,3 +1,5 @@
+// Package service contains business logic and use case implementations for the IMS application.
+// It coordinates between repositories and provides audit logging, message processing, and webhook services.
 package service
 
 import (

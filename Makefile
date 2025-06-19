@@ -1,4 +1,4 @@
-.PHONY: build run run-script run-script-setup test test-all test-coverage test-integration test-integration-coverage test-all-coverage test-benchmark test-race test-package test-watch test-verbose test-clean test-setup test-ci test-quick clean deps lint fmt help migrate migrate-with-data swagger swagger-gen swagger-install swagger-serve docker-build docker-build-tag docker-up docker-up-prod docker-down docker-down-prod docker-logs docker-logs-prod docker-restart docker-migrate docker-migrate-prod docker-status docker-shell docker-shell-prod docker-clean release release-minor release-major release-version release-docker version
+.PHONY: build run run-script run-script-setup test test-all test-coverage test-integration test-integration-coverage test-all-coverage test-benchmark test-race test-package test-watch test-verbose test-clean test-setup test-ci test-quick clean deps install-tools lint fmt help migrate migrate-with-data swagger swagger-gen swagger-install swagger-serve docker-build docker-build-tag docker-up docker-up-prod docker-down docker-down-prod docker-logs docker-logs-prod docker-restart docker-migrate docker-migrate-prod docker-status docker-shell docker-shell-prod docker-clean release release-minor release-major release-version release-docker version
 
 # Build the application (legacy target - use build with bin dependency)
 
@@ -48,6 +48,17 @@ run-script-setup:
 deps:
 	go mod download
 	go mod tidy
+
+# Install development tools
+install-tools:
+	@echo "🛠️  Installing development tools..."
+	@echo "📥 Installing golangci-lint..."
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	@echo "📥 Installing swag (Swagger CLI)..."
+	go install github.com/swaggo/swag/cmd/swag@latest
+	@echo "📥 Installing air (hot reload)..."
+	go install github.com/cosmtrek/air@latest
+	@echo "✅ All development tools installed successfully"
 
 # Generate Swagger documentation
 swagger-gen:
@@ -184,11 +195,20 @@ test-quick:
 
 # Format code
 fmt:
+	@echo "🎨 Formatting Go code..."
 	go fmt ./...
 
-# Lint code (requires golangci-lint)
+# Lint code (auto-installs golangci-lint if missing)
 lint:
-	golangci-lint run
+	@echo "🔍 Running Go linter..."
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run; \
+	else \
+		echo "📥 golangci-lint not found. Installing..."; \
+		go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; \
+		echo "✅ golangci-lint installed successfully"; \
+		golangci-lint run; \
+	fi
 
 # Clean build artifacts
 clean:
@@ -522,7 +542,8 @@ help:
 	@echo "  test             - Run tests"
 	@echo "  test-coverage    - Run tests with coverage"
 	@echo "  fmt              - Format code"
-	@echo "  lint             - Lint code (requires golangci-lint)"
+	@echo "  install-tools    - Install development tools (golangci-lint, swag, air)"
+	@echo "  lint             - Lint code (auto-installs golangci-lint if missing)"
 	@echo ""
 	@echo "🔧 Utilities:"
 	@echo "  deps             - Download and tidy dependencies"

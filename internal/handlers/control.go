@@ -1,7 +1,10 @@
+// Package handlers provides HTTP request handlers for the IMS REST API.
+// It includes handlers for audit logs, health checks, message management, and control operations.
 package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -88,5 +91,9 @@ func (h *ControlHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	resp.Status.StartedAt = startedAt
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("Error encoding JSON response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
 }

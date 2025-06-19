@@ -1,3 +1,5 @@
+// Package postgres provides PostgreSQL implementations of repository interfaces.
+// It handles database connections, queries, and transactions for message and audit log storage.
 package postgres
 
 import (
@@ -5,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -36,9 +39,8 @@ func (r *auditRepository) Log(ctx context.Context, auditLog *domain.AuditLog) er
 			:success_count, :failure_count, :metadata, :created_at
 		)`
 
-	// Convert metadata to JSON
 	var metadataJSON interface{}
-	if auditLog.Metadata != nil && len(auditLog.Metadata) > 0 {
+	if len(auditLog.Metadata) > 0 {
 		jsonBytes, err := json.Marshal(auditLog.Metadata)
 		if err != nil {
 			return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -85,7 +87,12 @@ func (r *auditRepository) LogBatch(ctx context.Context, auditLogs []*domain.Audi
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			// Log the rollback error but don't override the original error
+			log.Printf("Error rolling back transaction: %v", rollbackErr)
+		}
+	}()
 
 	query := `
 		INSERT INTO audit_logs (
@@ -99,9 +106,8 @@ func (r *auditRepository) LogBatch(ctx context.Context, auditLogs []*domain.Audi
 		)`
 
 	for _, auditLog := range auditLogs {
-		// Convert metadata to JSON
 		var metadataJSON interface{}
-		if auditLog.Metadata != nil && len(auditLog.Metadata) > 0 {
+		if len(auditLog.Metadata) > 0 {
 			jsonBytes, err := json.Marshal(auditLog.Metadata)
 			if err != nil {
 				return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -374,53 +380,30 @@ func (r *auditRepository) GetAuditLogStats(ctx context.Context, filter *domain.A
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get audit log stats: %w", err)
+		return nil, fmt.Errorf("failed to query audit log stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Error closing rows: %v", closeErr)
+		}
+	}()
 
 	stats := &domain.AuditLogStats{
 		EventTypeCounts: make(map[domain.AuditEventType]int64),
 	}
 
-	var totalCount int64
-	var lastTime *time.Time
-	var totalDuration float64
-	var countWithDuration int64
-
 	for rows.Next() {
+		var eventType string
 		var count int64
-		var eventType domain.AuditEventType
-		var eventTime *time.Time
-		var avgDuration *float64
-
-		err := rows.Scan(&count, &eventType, &count, &eventTime, &avgDuration)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan stats: %w", err)
+		if err := rows.Scan(&eventType, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan audit log stats: %w", err)
 		}
-
-		stats.EventTypeCounts[eventType] = count
-		totalCount += count
-
-		if eventTime != nil && (lastTime == nil || eventTime.After(*lastTime)) {
-			lastTime = eventTime
-		}
-
-		if avgDuration != nil {
-			totalDuration += *avgDuration * float64(count)
-			countWithDuration += count
-		}
+		stats.EventTypeCounts[domain.AuditEventType(eventType)] = count
+		stats.TotalCount += count
 	}
 
-	stats.TotalCount = totalCount
-
-	if lastTime != nil {
-		timeStr := lastTime.Format(time.RFC3339)
-		stats.LastEventTime = &timeStr
-	}
-
-	if countWithDuration > 0 {
-		avgDur := totalDuration / float64(countWithDuration)
-		stats.AverageRequestDuration = &avgDur
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error during rows iteration: %w", err)
 	}
 
 	return stats, nil

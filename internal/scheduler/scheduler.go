@@ -1,3 +1,5 @@
+// Package scheduler provides the core scheduling functionality for batch message processing.
+// It manages periodic execution of message sending tasks with configurable intervals and batch sizes.
 package scheduler
 
 import (
@@ -24,6 +26,9 @@ type Scheduler struct {
 	done      chan struct{}
 	running   int32
 	startedAt *time.Time
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 func NewScheduler(service *service.MessageService, auditService service.AuditService, interval time.Duration, batchSize int) *Scheduler {
@@ -114,7 +119,9 @@ func (s *Scheduler) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			log.Println("Scheduler stopping due to context cancellation")
-			s.Stop()
+			if err := s.Stop(); err != nil {
+				log.Printf("Error stopping scheduler: %v", err)
+			}
 			return
 		case <-s.done:
 			log.Println("Scheduler stopping due to done signal")

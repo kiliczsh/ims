@@ -20,13 +20,12 @@ package main
 // @name Authorization
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
-	"syscall"
 
 	"ims/internal/config"
 	"ims/internal/repository"
@@ -74,7 +73,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	defer sqlDB.Close()
+	defer func() {
+		if err := sqlDB.Close(); err != nil {
+			log.Printf("Error closing database connection: %v", err)
+		}
+	}()
 
 	// Wrap with sqlx for audit repository
 	db := sqlx.NewDb(sqlDB, "postgres")
@@ -131,26 +134,22 @@ func main() {
 	// Initialize server with audit service
 	srv := server.NewServer(cfg, sqlDB, redisClient, messageService, scheduler, auditService)
 
-	// Setup graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+	// Graceful shutdown handling
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
 	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-		log.Println("Shutting down gracefully...")
-		cancel()
+		<-c
+		log.Println("Received interrupt signal, shutting down gracefully...")
+		if err := srv.Shutdown(); err != nil {
+			log.Printf("Error during shutdown: %v", err)
+		}
+		os.Exit(0)
 	}()
 
-	// Start the server
-	log.Printf("Server started on http://localhost:%s", cfg.Server.Port)
-	log.Printf("Health check: http://localhost:%s/api/health", cfg.Server.Port)
-	log.Printf("API documentation: http://localhost:%s/api/docs", cfg.Server.Port)
-
-	if err := srv.Start(ctx); err != nil {
-		log.Printf("Server shutdown: %v", err)
+	// Start server
+	log.Printf("Starting server on port %s", cfg.Server.Port)
+	if err := srv.Start(); err != nil && err != http.ErrServerClosed {
+		log.Printf("Server failed to start: %v", err)
+		os.Exit(1)
 	}
-
-	log.Println("Server stopped")
 }

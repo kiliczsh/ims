@@ -1,3 +1,5 @@
+// Package domain contains the core business entities and domain logic for the IMS application.
+// It defines audit logs, messages, errors, and other business domain types.
 package domain
 
 import (
@@ -143,7 +145,7 @@ type AuditLogFilter struct {
 	Offset     int              `json:"offset,omitempty"`
 }
 
-// Custom JSON marshaling for metadata field
+// MarshalJSON implements custom JSON marshaling for the AuditLog metadata field
 func (a *AuditLog) MarshalJSON() ([]byte, error) {
 	type Alias AuditLog
 	aux := &struct {
@@ -153,7 +155,7 @@ func (a *AuditLog) MarshalJSON() ([]byte, error) {
 		Alias: (*Alias)(a),
 	}
 
-	if a.Metadata != nil && len(a.Metadata) > 0 {
+	if len(a.Metadata) > 0 {
 		metadataBytes, err := json.Marshal(a.Metadata)
 		if err != nil {
 			return nil, err

@@ -8,16 +8,18 @@ import (
 	"github.com/google/uuid"
 )
 
+const testMessageID = "msg_12345"
+
 func BenchmarkMessage_JSONMarshal(b *testing.B) {
 	msgID := uuid.New()
-	messageID := "msg_12345"
+	messageID := testMessageID
 	sentAt := time.Now()
 
-	msg := &Message{
+	message := &Message{
 		ID:          msgID,
 		PhoneNumber: "+1234567890",
-		Content:     "Test message for benchmarking",
-		Status:      StatusSent,
+		Content:     "Test message for JSON marshaling benchmark",
+		Status:      StatusPending,
 		MessageID:   &messageID,
 		RetryCount:  1,
 		CreatedAt:   time.Now(),
@@ -26,10 +28,8 @@ func BenchmarkMessage_JSONMarshal(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
-		_, err := json.Marshal(msg)
+		_, err := json.Marshal(message)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -38,13 +38,13 @@ func BenchmarkMessage_JSONMarshal(b *testing.B) {
 
 func BenchmarkMessage_JSONUnmarshal(b *testing.B) {
 	msgID := uuid.New()
-	messageID := "msg_12345"
+	messageID := testMessageID
 	sentAt := time.Now()
 
-	msg := &Message{
+	original := &Message{
 		ID:          msgID,
 		PhoneNumber: "+1234567890",
-		Content:     "Test message for benchmarking",
+		Content:     "Test message for JSON unmarshaling benchmark",
 		Status:      StatusSent,
 		MessageID:   &messageID,
 		RetryCount:  1,
@@ -53,17 +53,15 @@ func BenchmarkMessage_JSONUnmarshal(b *testing.B) {
 		UpdatedAt:   time.Now(),
 	}
 
-	data, err := json.Marshal(msg)
+	data, err := json.Marshal(original)
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	b.ResetTimer()
-	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
-		var unmarshaled Message
-		err := json.Unmarshal(data, &unmarshaled)
+		var message Message
+		err := json.Unmarshal(data, &message)
 		if err != nil {
 			b.Fatal(err)
 		}

@@ -1,14 +1,28 @@
+// Package handlers provides HTTP request handlers for the IMS REST API.
+// It includes handlers for audit logs, health checks, message management, and control operations.
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
 	"ims/internal/scheduler"
 
 	"github.com/redis/go-redis/v9"
+)
+
+// Constants for health status values
+const (
+	HealthStatusHealthy       = "healthy"
+	HealthStatusUnhealthy     = "unhealthy"
+	HealthStatusConnected     = "connected"
+	HealthStatusNotConfigured = "not_configured"
+	HealthStatusStopped       = "stopped"
+	HealthStatusRunning       = "running"
 )
 
 type HealthHandler struct {
@@ -32,6 +46,7 @@ type HealthResponse struct {
 	Scheduler map[string]interface{} `json:"scheduler"`
 	Database  string                 `json:"database" example:"connected"`
 	Redis     string                 `json:"redis" example:"connected"`
+	Errors    []string               `json:"errors,omitempty"`
 }
 
 // Handle handles health check requests
@@ -50,7 +65,7 @@ func (h *HealthHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := HealthResponse{
-		Status:    "healthy",
+		Status:    HealthStatusHealthy,
 		Timestamp: time.Now(),
 	}
 
@@ -72,33 +87,39 @@ func (h *HealthHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// Check database connection
 	if h.db != nil {
 		if err := h.db.Ping(); err != nil {
-			response.Database = "disconnected"
-			response.Status = "unhealthy"
+			response.Status = HealthStatusUnhealthy
+			response.Errors = append(response.Errors, "Database connection failed")
+			response.Database = HealthStatusConnected
 		} else {
-			response.Database = "connected"
+			response.Database = HealthStatusConnected
 		}
 	} else {
-		response.Database = "not_configured"
-		response.Status = "unhealthy"
+		response.Database = HealthStatusNotConfigured
 	}
 
-	// Check Redis connection (optional)
+	// Check Redis connection if configured
 	if h.redis != nil {
-		if _, err := h.redis.Ping(r.Context()).Result(); err != nil {
-			response.Redis = "disconnected"
+		if err := h.redis.Ping(context.Background()).Err(); err != nil {
+			response.Status = HealthStatusUnhealthy
+			response.Errors = append(response.Errors, "Redis connection failed")
+			response.Redis = HealthStatusConnected
 		} else {
-			response.Redis = "connected"
+			response.Redis = HealthStatusConnected
 		}
 	} else {
-		response.Redis = "not_configured"
+		response.Redis = HealthStatusNotConfigured
 	}
 
 	statusCode := http.StatusOK
-	if response.Status == "unhealthy" {
+	if response.Status == HealthStatusUnhealthy {
 		statusCode = http.StatusServiceUnavailable
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding JSON response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
 }

@@ -1,3 +1,5 @@
+// Package repository defines interfaces and implementations for data access layer.
+// It provides abstractions for message and audit log storage with support for PostgreSQL and Redis.
 package repository
 
 import (

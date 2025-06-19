@@ -1,8 +1,11 @@
+// Package server provides HTTP server setup and routing for the IMS application.
+// It configures middleware, handlers, and graceful shutdown for the REST API service.
 package server
 
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 type Server struct {
 	httpServer *http.Server
 	scheduler  *scheduler.Scheduler
+	ctx        context.Context
 }
 
 func NewServer(
@@ -68,12 +72,13 @@ func NewServer(
 	return &Server{
 		httpServer: server,
 		scheduler:  scheduler,
+		ctx:        context.Background(),
 	}
 }
 
-func (s *Server) Start(ctx context.Context) error {
+func (s *Server) Start() error {
 	go func() {
-		<-ctx.Done()
+		<-s.ctx.Done()
 		s.Shutdown()
 	}()
 
@@ -83,7 +88,9 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) Shutdown() error {
 	// Stop scheduler first
 	if s.scheduler != nil {
-		s.scheduler.Stop()
+		if err := s.scheduler.Stop(); err != nil {
+			log.Printf("Error stopping scheduler: %v", err)
+		}
 	}
 
 	// Shutdown HTTP server
@@ -150,7 +157,9 @@ func SetupSwagger(mux *http.ServeMux) {
     </script>
 </body>
 </html>`
-		w.Write([]byte(html))
+		if _, err := w.Write([]byte(html)); err != nil {
+			log.Printf("Error writing response: %v", err)
+		}
 	})
 
 	// Serve docs.go for Go imports (if generated)

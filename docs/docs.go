@@ -658,6 +658,12 @@ const docTemplate = `{
                     "type": "string",
                     "example": "connected"
                 },
+                "errors": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "redis": {
                     "type": "string",
                     "example": "connected"

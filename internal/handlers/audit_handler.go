@@ -1,7 +1,10 @@
+// Package handlers provides HTTP request handlers for the IMS REST API.
+// It includes handlers for audit logs, health checks, message management, and control operations.
 package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,13 +16,25 @@ import (
 	"ims/internal/service"
 )
 
+// AuditHandler handles audit log related HTTP requests
 type AuditHandler struct {
 	auditService service.AuditService
 }
 
+// NewAuditHandler creates a new AuditHandler
 func NewAuditHandler(auditService service.AuditService) *AuditHandler {
 	return &AuditHandler{
 		auditService: auditService,
+	}
+}
+
+// Helper function to safely encode JSON responses
+func writeJSONResponse(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("Error encoding JSON response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -138,8 +153,7 @@ func (h *AuditHandler) GetAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(auditLogs)
+	writeJSONResponse(w, auditLogs)
 }
 
 // GetBatchAuditLogs godoc
@@ -170,8 +184,7 @@ func (h *AuditHandler) GetBatchAuditLogs(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(auditLogs)
+	writeJSONResponse(w, auditLogs)
 }
 
 // GetMessageAuditLogs godoc
@@ -202,8 +215,7 @@ func (h *AuditHandler) GetMessageAuditLogs(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(auditLogs)
+	writeJSONResponse(w, auditLogs)
 }
 
 // GetAuditLogStats godoc
@@ -260,8 +272,7 @@ func (h *AuditHandler) GetAuditLogStats(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	writeJSONResponse(w, stats)
 }
 
 // CleanupOldAuditLogs godoc
@@ -300,6 +311,5 @@ func (h *AuditHandler) CleanupOldAuditLogs(w http.ResponseWriter, r *http.Reques
 		"message":       "Audit logs cleanup completed successfully",
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSONResponse(w, response)
 }
