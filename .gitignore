@@ -27,11 +27,6 @@ releases/
 *.zip
 *.sha256
 
-# Generated documentation
-docs/swagger.json
-docs/swagger.yaml
-!docs/docs.go
-
 # Environment files
 .env
 .env.local
