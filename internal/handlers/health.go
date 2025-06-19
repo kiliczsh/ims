@@ -55,20 +55,31 @@ func (h *HealthHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check scheduler status
-	running, startedAt := h.scheduler.GetStatus()
-	response.Scheduler = map[string]interface{}{
-		"running": running,
-	}
-	if startedAt != nil {
-		response.Scheduler["started_at"] = startedAt
+	if h.scheduler != nil {
+		running, startedAt := h.scheduler.GetStatus()
+		response.Scheduler = map[string]interface{}{
+			"running": running,
+		}
+		if startedAt != nil {
+			response.Scheduler["started_at"] = startedAt
+		}
+	} else {
+		response.Scheduler = map[string]interface{}{
+			"running": false,
+		}
 	}
 
 	// Check database connection
-	if err := h.db.Ping(); err != nil {
-		response.Database = "disconnected"
-		response.Status = "unhealthy"
+	if h.db != nil {
+		if err := h.db.Ping(); err != nil {
+			response.Database = "disconnected"
+			response.Status = "unhealthy"
+		} else {
+			response.Database = "connected"
+		}
 	} else {
-		response.Database = "connected"
+		response.Database = "not_configured"
+		response.Status = "unhealthy"
 	}
 
 	// Check Redis connection (optional)

@@ -205,7 +205,8 @@ func (s *auditService) logWithFallback(ctx context.Context, auditLog *domain.Aud
 		if auditLog.MessageID != nil {
 			log.Printf("  Message ID: %s", auditLog.MessageID.String())
 		}
-		return fmt.Errorf("audit logging failed: %w", err)
+		// Don't return error on fallback - this allows the application to continue
+		return nil
 	}
 	return nil
 }

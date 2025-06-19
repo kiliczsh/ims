@@ -111,6 +111,34 @@ curl "http://localhost:8080/api/messages/sent" \
 - **Audit Logs**: `GET /api/audit` (requires auth)
 - **API Documentation**: `GET /api/docs` (public)
 
+## Testing
+
+IMS includes a comprehensive testing framework with unit tests, integration tests, and benchmarks.
+
+### Quick Testing
+```bash
+# Run basic unit tests
+make test
+
+# Run all tests with coverage
+make test-all-coverage
+
+# Watch tests during development
+make test-watch
+
+# Run tests for CI/CD
+make test-ci
+```
+
+### Testing Options
+- **Unit Tests**: Fast, isolated tests (>80% coverage required)
+- **Integration Tests**: Real database testing
+- **Benchmark Tests**: Performance measurements
+- **Race Detection**: Concurrent safety testing
+- **Coverage Reports**: HTML and XML formats
+
+See [docs/TESTING.md](docs/TESTING.md) for comprehensive testing documentation.
+
 ## Development
 
 For technical details, architecture information, and development setup, see [DEVELOPMENT.md](DEVELOPMENT.md).

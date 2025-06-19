@@ -59,6 +59,14 @@ Thumbs.db
 # Coverage files
 coverage.out
 coverage.html
+coverage.xml
+
+# Test artifacts and reports
+test-results/
+benchmark.txt
+profile.out
+test.json
+*.prof
 
 # Swagger configuration (if used)
 # .swaggo

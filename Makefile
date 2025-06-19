@@ -1,4 +1,4 @@
-.PHONY: build run run-script run-script-setup test clean deps lint fmt help migrate migrate-with-data swagger swagger-gen swagger-install swagger-serve docker-build docker-build-tag docker-up docker-up-prod docker-down docker-down-prod docker-logs docker-logs-prod docker-restart docker-migrate docker-migrate-prod docker-status docker-shell docker-shell-prod docker-clean release release-minor release-major release-version release-docker version
+.PHONY: build run run-script run-script-setup test test-all test-coverage test-integration test-integration-coverage test-all-coverage test-benchmark test-race test-package test-watch test-verbose test-clean test-setup test-ci test-quick clean deps lint fmt help migrate migrate-with-data swagger swagger-gen swagger-install swagger-serve docker-build docker-build-tag docker-up docker-up-prod docker-down docker-down-prod docker-logs docker-logs-prod docker-restart docker-migrate docker-migrate-prod docker-status docker-shell docker-shell-prod docker-clean release release-minor release-major release-version release-docker version
 
 # Build the application (legacy target - use build with bin dependency)
 
@@ -99,14 +99,88 @@ swagger-serve:
 docs:
 	mkdir -p docs
 
-# Run tests
-test:
-	go test -v ./...
+# =============================================================================
+# Testing Commands
+# =============================================================================
 
-# Run tests with coverage
+# Run unit tests (quick)
+test:
+	@echo "🧪 Running unit tests..."
+	@./scripts/test-runner.sh --type unit
+
+# Run all tests
+test-all:
+	@echo "🧪 Running all tests..."
+	@./scripts/test-runner.sh --type all
+
+# Run unit tests with coverage
 test-coverage:
-	go test -v -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out -o coverage.html
+	@echo "🧪 Running unit tests with coverage..."
+	@./scripts/test-runner.sh --type unit --coverage
+
+# Run integration tests
+test-integration:
+	@echo "🧪 Running integration tests..."
+	@./scripts/test-runner.sh --type integration --setup
+
+# Run integration tests with coverage
+test-integration-coverage:
+	@echo "🧪 Running integration tests with coverage..."
+	@./scripts/test-runner.sh --type integration --coverage --setup
+
+# Run all tests with coverage
+test-all-coverage:
+	@echo "🧪 Running all tests with coverage..."
+	@./scripts/test-runner.sh --type all --coverage --setup
+
+# Run benchmark tests
+test-benchmark:
+	@echo "🧪 Running benchmark tests..."
+	@./scripts/test-runner.sh --benchmark
+
+# Run tests with race detection
+test-race:
+	@echo "🧪 Running tests with race detection..."
+	@./scripts/test-runner.sh --type unit --race
+
+# Run tests for specific package
+test-package:
+	@if [ -z "$(PKG)" ]; then \
+		echo "❌ Please provide a package. Usage: make test-package PKG=./internal/service"; \
+		exit 1; \
+	fi
+	@echo "🧪 Running tests for package: $(PKG)"
+	@./scripts/test-runner.sh --package $(PKG) --coverage
+
+# Watch tests (re-run on file changes)
+test-watch:
+	@echo "🧪 Starting test watch mode..."
+	@./scripts/test-runner.sh --watch --coverage
+
+# Run tests with verbose output
+test-verbose:
+	@echo "🧪 Running tests with verbose output..."
+	@./scripts/test-runner.sh --type unit --verbose --coverage
+
+# Clean test artifacts
+test-clean:
+	@echo "🧪 Cleaning test artifacts..."
+	@./scripts/test-runner.sh --clean
+
+# Setup test environment
+test-setup:
+	@echo "🧪 Setting up test environment..."
+	@./scripts/test-runner.sh --setup
+
+# Full test suite for CI/CD
+test-ci:
+	@echo "🧪 Running full CI test suite..."
+	@./scripts/test-runner.sh --type all --coverage --race --json --xml --setup --threshold 80
+
+# Quick test for development
+test-quick:
+	@echo "🧪 Running quick tests..."
+	@./scripts/test-runner.sh --type unit --failfast
 
 # Format code
 fmt:
@@ -121,8 +195,11 @@ clean:
 	rm -rf bin/
 	rm -rf docs/
 	rm -rf dist/
-	rm -f coverage.out coverage.html
+	rm -rf test-results/
+	rm -f coverage.out coverage.html coverage.xml
+	rm -f test.json benchmark.txt profile.out
 	rm -f *.tar.gz *.zip *.sha256
+	go clean -testcache
 
 # Run database migrations
 migrate:
