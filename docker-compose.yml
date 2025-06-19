@@ -1,0 +1,129 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ims-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: insider_messages
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ims-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d insider_messages"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache (Optional)
+  redis:
+    image: redis:7-alpine
+    container_name: ims-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ims-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  # IMS Application
+  ims:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ims-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Server Configuration
+      SERVER_PORT: 8080
+      SERVER_READ_TIMEOUT: 15s
+      SERVER_WRITE_TIMEOUT: 15s
+      
+      # Database Configuration
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/insider_messages?sslmode=disable
+      DATABASE_MAX_CONNECTIONS: 25
+      DATABASE_MAX_IDLE_CONNECTIONS: 5
+      
+      # Redis Configuration
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_TTL: 168h
+      
+      # Webhook Configuration (Update with your webhook URL)
+      WEBHOOK_URL: https://webhook.site/your-unique-url
+      WEBHOOK_AUTH_KEY: INS.me1x9uMcyYGlhKKQVPoc.bO3j9aZwRTOcA2Ywo
+      WEBHOOK_TIMEOUT: 30s
+      WEBHOOK_MAX_RETRIES: 3
+      
+      # Scheduler Configuration
+      SCHEDULER_INTERVAL: 2m
+      SCHEDULER_BATCH_SIZE: 2
+      
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      
+      # Message Configuration
+      MESSAGE_MAX_LENGTH: 160
+    networks:
+      - ims-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Database Migration Service (runs once)
+  migration:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ims-migration
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/insider_messages?sslmode=disable
+    networks:
+      - ims-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Running database migrations...' &&
+        /app/scripts/migrate.sh &&
+        echo 'Migrations completed successfully!'
+      "
+    restart: "no"
+
+networks:
+  ims-network:
+    driver: bridge
+    name: ims-network
+
+volumes:
+  postgres_data:
+    name: ims-postgres-data
+  redis_data:
+    name: ims-redis-data 

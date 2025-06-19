@@ -1,0 +1,156 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ims-postgres-prod
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-insider_messages}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ims-prod-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-insider_messages}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: ims-redis-prod
+    restart: always
+    volumes:
+      - redis_prod_data:/data
+    networks:
+      - ims-prod-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    command: >
+      redis-server 
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # IMS Application
+  ims:
+    image: ${IMS_IMAGE:-ims:latest}
+    container_name: ims-app-prod
+    restart: always
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      # Server Configuration
+      SERVER_PORT: 8080
+      SERVER_READ_TIMEOUT: ${SERVER_READ_TIMEOUT:-30s}
+      SERVER_WRITE_TIMEOUT: ${SERVER_WRITE_TIMEOUT:-30s}
+      
+      # Database Configuration
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-insider_messages}?sslmode=disable
+      DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-25}
+      DATABASE_MAX_IDLE_CONNECTIONS: ${DATABASE_MAX_IDLE_CONNECTIONS:-5}
+      
+      # Redis Configuration
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CACHE_TTL: ${REDIS_CACHE_TTL:-168h}
+      
+      # Webhook Configuration
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      WEBHOOK_AUTH_KEY: ${WEBHOOK_AUTH_KEY}
+      WEBHOOK_TIMEOUT: ${WEBHOOK_TIMEOUT:-30s}
+      WEBHOOK_MAX_RETRIES: ${WEBHOOK_MAX_RETRIES:-3}
+      
+      # Scheduler Configuration
+      SCHEDULER_INTERVAL: ${SCHEDULER_INTERVAL:-2m}
+      SCHEDULER_BATCH_SIZE: ${SCHEDULER_BATCH_SIZE:-2}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      
+      # Message Configuration
+      MESSAGE_MAX_LENGTH: ${MESSAGE_MAX_LENGTH:-160}
+    networks:
+      - ims-prod-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+      restart_policy:
+        condition: any
+        delay: 10s
+        max_attempts: 3
+        window: 120s
+
+  # Database Migration Service
+  migration:
+    image: ${IMS_IMAGE:-ims:latest}
+    container_name: ims-migration-prod
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-insider_messages}?sslmode=disable
+    networks:
+      - ims-prod-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "
+        echo 'Running database migrations...' &&
+        /app/scripts/migrate.sh &&
+        echo 'Migrations completed successfully!'
+      "
+    restart: "no"
+
+networks:
+  ims-prod-network:
+    driver: bridge
+    name: ims-prod-network
+
+volumes:
+  postgres_prod_data:
+    name: ims-postgres-prod-data
+    driver: local
+  redis_prod_data:
+    name: ims-redis-prod-data
+    driver: local 

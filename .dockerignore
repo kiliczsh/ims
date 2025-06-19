@@ -1,0 +1,70 @@
+# Git and version control
+.git
+.gitignore
+.gitattributes
+
+# Documentation (except what's needed)
+*.md
+!README.md
+docs/*.md
+!docs/swagger.yaml
+!docs/swagger.json
+!docs/docs.go
+
+# Docker files (not needed in container)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Environment files
+.env*
+!.env.example
+
+# Build artifacts
+bin/
+dist/
+build/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Test files
+*_test.go
+test/
+tests/
+coverage.out
+coverage.html
+
+# Development tools
+.air.toml
+nodemon.json
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Security
+*.pem
+*.key
+*.crt
+
+# Dependencies (will be downloaded in container)
+vendor/ 

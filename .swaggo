@@ -1,0 +1,6 @@
+skip github.com/lib/pq.Error
+skip github.com/redis/go-redis/v9.Cmdable
+skip database/sql.NullString
+skip database/sql.NullInt64
+skip database/sql.NullTime
+skip database/sql.NullBool 
