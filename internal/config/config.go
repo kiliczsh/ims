@@ -12,6 +12,7 @@ type Config struct {
 	Server    ServerConfig
 	Database  DatabaseConfig
 	Redis     RedisConfig
+	RabbitMQ  RabbitMQConfig
 	Webhook   WebhookConfig
 	Scheduler SchedulerConfig
 	Log       LogConfig
@@ -33,6 +34,16 @@ type DatabaseConfig struct {
 type RedisConfig struct {
 	URL      string        `envconfig:"REDIS_URL"`
 	CacheTTL time.Duration `envconfig:"REDIS_CACHE_TTL" default:"168h"`
+}
+
+type RabbitMQConfig struct {
+	URL                  string `envconfig:"RABBITMQ_URL"`
+	Enabled              bool   `envconfig:"RABBITMQ_ENABLED" default:"false"`
+	MessagesQueue        string `envconfig:"RABBITMQ_MESSAGES_QUEUE" default:"messages.pending"`
+	RetryQueue           string `envconfig:"RABBITMQ_RETRY_QUEUE" default:"messages.retry"`
+	DeadLetterQueue      string `envconfig:"RABBITMQ_DLQ" default:"messages.dead_letter"`
+	MaxRetries           int    `envconfig:"RABBITMQ_MAX_RETRIES" default:"5"`
+	RetryDelayMultiplier int    `envconfig:"RABBITMQ_RETRY_DELAY_MULTIPLIER" default:"60"` // seconds
 }
 
 type WebhookConfig struct {

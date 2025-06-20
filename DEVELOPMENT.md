@@ -4,11 +4,13 @@
 1. [Architecture](#architecture)
 2. [Development Setup](#development-setup)
 3. [Database Schema](#database-schema)
-4. [Configuration](#configuration)
-5. [API Development](#api-development)
-6. [Testing](#testing)
-7. [Build & Deployment](#build--deployment)
-8. [Troubleshooting](#troubleshooting)
+4. [Queue Systems](#queue-systems)
+5. [Configuration](#configuration)
+6. [API Development](#api-development)
+7. [Testing](#testing)
+8. [Build & Deployment](#build--deployment)
+9. [Docker Development](#docker-development)
+10. [Troubleshooting](#troubleshooting)
 
 ## Architecture
 
@@ -57,6 +59,7 @@ The IMS (Insider Message Sender) is a Go-based microservice that automatically p
 │   ├── domain/              # Domain models and types
 │   ├── handlers/            # HTTP request handlers
 │   ├── middleware/          # HTTP middleware
+│   ├── queue/               # Queue abstraction layer
 │   ├── repository/          # Data access layer
 │   │   ├── postgres/        # PostgreSQL implementations
 │   │   └── redis/           # Redis cache implementations
@@ -77,6 +80,8 @@ The IMS (Insider Message Sender) is a Go-based microservice that automatically p
 - **Go 1.21+** (`go version`)
 - **PostgreSQL 12+** (local or remote)
 - **Redis 6+** (optional, for caching)
+- **RabbitMQ 3.13+** (optional, for high-performance queue)
+- **Docker & Docker Compose** (recommended)
 - **Git** for version control
 
 ### Quick Start
@@ -121,7 +126,7 @@ make swagger      # Generate API docs
 ### Main Tables
 ```sql
 -- Messages table
-CREATE TYPE message_status AS ENUM ('pending', 'sending', 'sent', 'failed');
+CREATE TYPE message_status AS ENUM ('pending', 'sending', 'sent', 'failed', 'dead_letter');
 
 CREATE TABLE messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -130,9 +135,25 @@ CREATE TABLE messages (
     status message_status NOT NULL DEFAULT 'pending',
     message_id VARCHAR(255),
     retry_count INTEGER DEFAULT 0,
+    last_retry_at TIMESTAMP WITH TIME ZONE,
+    next_retry_at TIMESTAMP WITH TIME ZONE,
+    failure_reason TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     sent_at TIMESTAMP WITH TIME ZONE,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Dead letter queue table
+CREATE TABLE dead_letter_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    original_message_id UUID NOT NULL,
+    phone_number VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    failure_reason TEXT NOT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    last_retry_at TIMESTAMP WITH TIME ZONE,
+    original_created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    moved_to_dlq_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Audit logs table
@@ -167,6 +188,11 @@ CREATE TABLE audit_logs (
 CREATE INDEX idx_messages_status ON messages(status);
 CREATE INDEX idx_messages_created_at ON messages(created_at);
 CREATE INDEX idx_messages_status_created ON messages(status, created_at);
+CREATE INDEX idx_messages_next_retry_at ON messages(next_retry_at);
+
+-- Dead letter queue indexes
+CREATE INDEX idx_dlq_original_message_id ON dead_letter_messages(original_message_id);
+CREATE INDEX idx_dlq_moved_at ON dead_letter_messages(moved_to_dlq_at);
 
 -- Audit indexes
 CREATE INDEX idx_audit_logs_event_type ON audit_logs(event_type);
@@ -186,293 +212,707 @@ psql $DATABASE_URL -c "SELECT * FROM migration_history ORDER BY applied_at;"
 ./scripts/migrate.sh --with-sample-data
 ```
 
+## Queue Systems
+
+IMS supports two queue implementations: Database Queue (default) and RabbitMQ Queue (optional).
+
+### Queue Abstraction
+
+The system uses interfaces for queue operations:
+
+```go
+type MessageQueue interface {
+    Publish(ctx context.Context, message domain.Message) error
+    StartConsumer(ctx context.Context, handler MessageHandler) error
+    Health() error
+    Close() error
+}
+
+type QueueManager interface {
+    GetQueue() MessageQueue
+    Close() error
+}
+```
+
+### Database Queue (Default)
+
+Uses PostgreSQL with polling for message processing.
+
+**Characteristics:**
+- ✅ Simple setup, no additional dependencies
+- ✅ ACID compliance and data persistence
+- ⚠️ Less efficient at high message volumes
+- ⚠️ Polling creates database load
+
+**Message Flow:**
+```
+API Request → Database → Scheduler (polling) → Webhook → Status Update
+```
+
+**Configuration:**
+```bash
+# Default configuration (database queue)
+RABBITMQ_ENABLED=false  # or omit this variable
+```
+
+### RabbitMQ Queue (Optional)
+
+Uses RabbitMQ message broker for high-performance scenarios.
+
+**Characteristics:**
+- ✅ High throughput and low latency
+- ✅ Push-based message delivery (no polling)
+- ✅ Built-in retry logic and dead letter queues
+- ✅ Horizontal scaling support
+- ⚠️ Additional service dependency
+
+**Message Flow:**
+```
+API Request → RabbitMQ Queue → Consumer (push) → Webhook → Ack/Nack
+```
+
+**Configuration:**
+```bash
+# Enable RabbitMQ
+RABBITMQ_ENABLED=true
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+
+# Queue names (optional, with defaults)
+RABBITMQ_MESSAGES_QUEUE=messages.pending
+RABBITMQ_RETRY_QUEUE=messages.retry
+RABBITMQ_DLQ=messages.dead_letter
+
+# Retry configuration (optional)
+RABBITMQ_MAX_RETRIES=5
+RABBITMQ_RETRY_DELAY_MULTIPLIER=60  # seconds
+```
+
+### Queue Performance Comparison
+
+| Feature | Database Queue | RabbitMQ Queue |
+|---------|----------------|----------------|
+| **Best For** | <100 messages/min | >100 messages/min |
+| **Setup Complexity** | Simple | Moderate |
+| **Latency** | Higher (polling) | Lower (push-based) |
+| **Scaling** | Single instance | Multiple workers |
+| **Dependencies** | PostgreSQL only | PostgreSQL + RabbitMQ |
+| **Reliability** | Database ACID | Native retry/DLQ |
+
+### Retry and Dead Letter Queue
+
+Both implementations support:
+
+- **Exponential Backoff**: Failed messages are retried with increasing delays
+- **Dead Letter Queue**: Messages that exceed max retries are moved to DLQ
+- **Failure Tracking**: All failures are logged with reasons
+
+#### Database Implementation
+- Retries stored in `messages` table with `next_retry_at` timestamp
+- DLQ entries stored in `dead_letter_messages` table
+- Scheduler processes both new and retry-ready messages
+
+#### RabbitMQ Implementation
+- Uses separate queues: `messages.pending`, `messages.retry`, `messages.dead_letter`
+- Headers track retry count and failure reasons
+- Native RabbitMQ features for reliability
+
 ## Configuration
 
 ### Environment Variables
+
+#### Required Configuration
 ```bash
-# Required Configuration
 DATABASE_URL=postgresql://postgres:password@localhost:5432/insider_messages
 WEBHOOK_URL=https://webhook.site/your-unique-url
 WEBHOOK_AUTH_KEY=your-secret-api-key
+```
 
-# Server Configuration  
+#### Server Configuration  
+```bash
 SERVER_PORT=8080
 SERVER_READ_TIMEOUT=15s
 SERVER_WRITE_TIMEOUT=15s
-
-# Optional Configuration
-REDIS_URL=redis://localhost:6379/0
-SCHEDULER_INTERVAL=2m
-SCHEDULER_BATCH_SIZE=2
-MESSAGE_MAX_LENGTH=160
-WEBHOOK_TIMEOUT=30s
-WEBHOOK_MAX_RETRIES=3
-LOG_LEVEL=info
-LOG_FORMAT=json
+SERVER_IDLE_TIMEOUT=60s
+SERVER_SHUTDOWN_TIMEOUT=30s
 ```
 
-### Configuration Structure
-```go
-type Config struct {
-    Server    ServerConfig
-    Database  DatabaseConfig
-    Redis     RedisConfig
-    Webhook   WebhookConfig
-    Scheduler SchedulerConfig
-    Message   MessageConfig
-}
+#### Scheduler Configuration
+```bash
+SCHEDULER_INTERVAL=2m
+SCHEDULER_BATCH_SIZE=2
+SCHEDULER_WEBHOOK_TIMEOUT=10s
+SCHEDULER_MAX_RETRIES=3
+SCHEDULER_RETRY_DELAY=1s
+```
+
+#### Database Configuration
+```bash
+DATABASE_MAX_OPEN_CONNS=25
+DATABASE_MAX_IDLE_CONNS=10
+DATABASE_CONN_MAX_LIFETIME=1h
+DATABASE_CONN_MAX_IDLE_TIME=30m
+```
+
+#### Redis Configuration (Optional)
+```bash
+REDIS_URL=redis://localhost:6379/0
+REDIS_TTL=1h
+REDIS_MAX_RETRIES=3
+REDIS_MIN_RETRY_BACKOFF=8ms
+REDIS_MAX_RETRY_BACKOFF=512ms
+```
+
+#### RabbitMQ Configuration (Optional)
+```bash
+RABBITMQ_ENABLED=false
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+RABBITMQ_MESSAGES_QUEUE=messages.pending
+RABBITMQ_RETRY_QUEUE=messages.retry
+RABBITMQ_DLQ=messages.dead_letter
+RABBITMQ_MAX_RETRIES=5
+RABBITMQ_RETRY_DELAY_MULTIPLIER=60
+```
+
+#### Message Configuration
+```bash
+MESSAGE_MAX_LENGTH=160
+MESSAGE_PHONE_VALIDATION_ENABLED=true
+```
+
+#### Audit Configuration
+```bash
+AUDIT_ENABLED=true
+AUDIT_BATCH_SIZE=100
+AUDIT_RETENTION_DAYS=30
 ```
 
 ## API Development
 
-### Adding New Endpoints
-1. **Define handler** in `internal/handlers/`
-2. **Add swagger annotations**:
+### Request/Response Types
+
+#### Create Message
 ```go
-// @Summary      Endpoint summary
-// @Description  Detailed description
-// @Tags         tag-name
-// @Accept       json
-// @Produce      json
-// @Param        param query string false "Parameter description"
-// @Success      200 {object} ResponseType
-// @Failure      400 {object} ErrorResponse
-// @Security     ApiKeyAuth
-// @Router       /endpoint [get]
-func (h *Handler) NewEndpoint(w http.ResponseWriter, r *http.Request) {
-    // Implementation
+type CreateMessageRequest struct {
+    PhoneNumber string `json:"phone_number" validate:"required,phone"`
+    Content     string `json:"content" validate:"required,max=160"`
+}
+
+type CreateMessageResponse struct {
+    ID          string    `json:"id"`
+    PhoneNumber string    `json:"phone_number"`
+    Content     string    `json:"content"`
+    Status      string    `json:"status"`
+    CreatedAt   time.Time `json:"created_at"`
 }
 ```
-3. **Register route** in `internal/server/server.go`
-4. **Regenerate docs**: `make swagger`
+
+#### Control API
+```go
+type ControlRequest struct {
+    Action string `json:"action" validate:"required,oneof=start stop"`
+}
+
+type ControlResponse struct {
+    Message string `json:"message"`
+    Status  string `json:"status"`
+}
+```
 
 ### Authentication
-- All protected endpoints require `Authorization` header
-- Use the API key from your `.env` file
-- Public endpoint: `/api/health`
 
-### Response Formats
+The API uses header-based authentication:
+
 ```go
-// Success Response
-type SuccessResponse struct {
-    Success bool        `json:"success"`
-    Data    interface{} `json:"data,omitempty"`
-    Message string      `json:"message,omitempty"`
+func AuthMiddleware(apiKey string) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        authHeader := c.GetHeader("Authorization")
+        if authHeader != apiKey {
+            c.JSON(401, gin.H{"error": "Unauthorized"})
+            c.Abort()
+            return
+        }
+        c.Next()
+    }
 }
+```
 
-// Error Response
-type ErrorResponse struct {
-    Error   string `json:"error"`
-    Code    int    `json:"code,omitempty"`
-    Details string `json:"details,omitempty"`
+### Validation
+
+Uses go-playground/validator for request validation:
+
+```go
+type CreateMessageRequest struct {
+    PhoneNumber string `json:"phone_number" validate:"required,phone"`
+    Content     string `json:"content" validate:"required,max=160"`
 }
+```
+
+### API Documentation
+
+Swagger documentation is auto-generated:
+
+```bash
+# Generate docs
+make swagger
+
+# View docs
+open http://localhost:8080/api/docs
 ```
 
 ## Testing
 
-### Running Tests
+### Test Types
+
+#### Unit Tests
+Fast, isolated tests that don't require external dependencies.
+
 ```bash
-# All tests
+# Run unit tests
 make test
 
-# Tests with coverage
+# With coverage
 make test-coverage
 
-# Specific package
-go test -v ./internal/service/...
-
-# Integration tests
-go test -v -tags=integration ./...
+# With race detection
+make test-race
 ```
 
-### Test Structure
-```
-internal/
-├── handlers/
-│   ├── handler.go
-│   └── handler_test.go
-├── service/
-│   ├── service.go
-│   └── service_test.go
-└── repository/
-    ├── repository.go
-    └── repository_test.go
+**Characteristics:**
+- Fast execution (< 5 minutes)
+- No external dependencies
+- Mock external services
+- High code coverage expected (>80%)
+
+#### Integration Tests
+Tests that verify component interactions with real external dependencies.
+
+```bash
+# Run integration tests
+make test-integration
+
+# With coverage
+make test-integration-coverage
 ```
 
-### Test Patterns
+**Requirements:**
+- PostgreSQL database
+- Redis (optional)
+- Test environment setup
+
+#### Benchmark Tests
+Performance tests to measure execution time and memory usage.
+
+```bash
+# Run benchmarks
+make test-benchmark
+
+# Or directly
+./scripts/test-runner.sh --benchmark
+```
+
+### Test Runner
+
+The project includes a comprehensive test runner at `scripts/test-runner.sh`:
+
+```bash
+# Basic usage
+./scripts/test-runner.sh
+
+# Run all test types
+./scripts/test-runner.sh --type all
+
+# Generate coverage reports
+./scripts/test-runner.sh --coverage
+
+# Watch mode for development
+./scripts/test-runner.sh --watch
+```
+
+### Command Line Options
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `-t, --type TYPE` | Test type: unit, integration, benchmark, all | `--type integration` |
+| `-c, --coverage` | Generate coverage reports | `--coverage` |
+| `-r, --race` | Enable race condition detection | `--race` |
+| `-v, --verbose` | Verbose output | `--verbose` |
+| `-w, --watch` | Watch mode (re-run on file changes) | `--watch` |
+| `-p, --package PKG` | Run tests for specific package | `--package ./internal/service` |
+| `-f, --filter FILTER` | Run tests matching filter pattern | `--filter TestMessage` |
+| `--threshold N` | Coverage threshold percentage | `--threshold 85` |
+| `--timeout DURATION` | Test timeout | `--timeout 10m` |
+
+### Make Targets
+
+```bash
+# Basic testing
+make test                    # Quick unit tests
+make test-all               # All test types
+make test-coverage          # Unit tests with coverage
+make test-integration       # Integration tests
+make test-benchmark         # Benchmark tests
+
+# Advanced testing
+make test-race              # Race condition detection
+make test-watch             # Watch mode
+make test-verbose           # Verbose output
+make test-ci                # Full CI test suite
+
+# Package-specific testing
+make test-package PKG=./internal/service
+
+# Maintenance
+make test-clean             # Clean test artifacts
+make test-setup             # Setup test environment
+```
+
+### Coverage Reports
+
+The test runner generates multiple coverage formats:
+
+```bash
+# Generate coverage reports
+make test-coverage
+
+# Coverage files generated:
+# - coverage.out (go format)
+# - coverage.html (HTML report)
+# - coverage.xml (XML for CI/CD)
+```
+
+### Test Environment Setup
+
+```bash
+# Setup everything automatically
+make test-setup
+
+# Manual setup
+./scripts/test-runner.sh --setup
+```
+
+### Writing Tests
+
+#### Unit Test Example
 ```go
-func TestMessageService_SendMessage(t *testing.T) {
-    // Arrange
-    mockRepo := &MockMessageRepository{}
-    service := NewMessageService(mockRepo, nil, nil, 160)
+func TestMessageService_CreateMessage(t *testing.T) {
+    // Setup
+    mockRepo := &repository.MockMessageRepository{}
+    service := NewMessageService(mockRepo, nil)
     
-    // Act
-    result, err := service.SendMessage(context.Background(), message)
+    // Test data
+    req := CreateMessageRequest{
+        PhoneNumber: "+1234567890",
+        Content:     "Test message",
+    }
+    
+    // Mock expectations
+    mockRepo.On("Create", mock.AnythingOfType("*domain.Message")).
+        Return(nil)
+    
+    // Execute
+    resp, err := service.CreateMessage(context.Background(), req)
     
     // Assert
     assert.NoError(t, err)
-    assert.Equal(t, expected, result)
+    assert.NotEmpty(t, resp.ID)
+    assert.Equal(t, req.PhoneNumber, resp.PhoneNumber)
+    mockRepo.AssertExpectations(t)
+}
+```
+
+#### Integration Test Example
+```go
+func TestMessageRepository_Create_Integration(t *testing.T) {
+    // Skip if not integration test
+    if testing.Short() {
+        t.Skip("Skipping integration test")
+    }
+    
+    // Setup test database
+    db := setupTestDB(t)
+    defer cleanupTestDB(t, db)
+    
+    repo := postgres.NewMessageRepository(db)
+    
+    // Test data
+    message := &domain.Message{
+        PhoneNumber: "+1234567890",
+        Content:     "Test message",
+        Status:      domain.StatusPending,
+    }
+    
+    // Execute
+    err := repo.Create(message)
+    
+    // Assert
+    assert.NoError(t, err)
+    assert.NotEmpty(t, message.ID)
 }
 ```
 
 ## Build & Deployment
 
-### Local Development
-```bash
-# Development with hot reload
-make dev
+### Build Commands
 
-# Manual build and run
+```bash
+# Build binary
 make build
-./bin/ims
 
-# Using legacy script
-make run-script
-```
+# Build with all platforms
+make build-all
 
-### Docker Development
-```bash
-# Start all services (PostgreSQL, Redis, IMS)
-make docker-up
-
-# View logs
-make docker-logs
-
-# Run migrations
-make docker-migrate
-
-# Stop services
-make docker-down
-
-# Clean resources
-make docker-clean
-```
-
-### Production Build
-
-#### Native Binary
-```bash
-# Build optimized binary
-CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bin/ims cmd/server/main.go
-
-# Cross-platform builds
-GOOS=darwin GOARCH=amd64 go build -o bin/ims-darwin cmd/server/main.go
-GOOS=windows GOARCH=amd64 go build -o bin/ims.exe cmd/server/main.go
-```
-
-#### Docker Production
-```bash
 # Build Docker image
 make docker-build
 
-# Build with version tag
-make docker-build-tag TAG=v1.0.0
+# Clean build artifacts
+make clean
+```
 
+### Binary Output
+
+```bash
+# Local build
+bin/ims-server
+
+# Cross-platform builds
+bin/ims-server-linux-amd64
+bin/ims-server-darwin-amd64
+bin/ims-server-windows-amd64.exe
+```
+
+### Release Process
+
+```bash
+# Create release
+make release VERSION=v1.0.0
+
+# This will:
+# 1. Tag the version
+# 2. Build all platforms
+# 3. Create release notes
+# 4. Build Docker images
+```
+
+## Docker Development
+
+### Docker Compose Profiles
+
+#### Default Profile (Database Queue)
+```bash
+# Start with database queue
+make docker-up
+
+# Services: postgres, redis, ims-app
+```
+
+#### RabbitMQ Profile
+```bash
+# Start with RabbitMQ queue
+make docker-up-rabbitmq
+
+# Services: postgres, redis, rabbitmq, ims-app
+```
+
+#### Production Profile
+```bash
 # Production deployment
-cp docker/.env.template .env
-# Edit .env with production values
 make docker-up-prod
 
-# Monitor production
-make docker-logs-prod
-make docker-status
+# Uses optimized settings and multi-stage builds
 ```
 
-### Container Registry
+### Docker Commands
+
 ```bash
-# Tag for registry
-docker tag ims:latest your-registry.com/ims:v1.0.0
+# Development
+make docker-build          # Build image
+make docker-up             # Start services
+make docker-down           # Stop services
+make docker-logs           # View logs
+make docker-restart        # Restart services
 
-# Push to registry
-docker push your-registry.com/ims:v1.0.0
+# RabbitMQ specific
+make rabbitmq-start        # Start RabbitMQ only
+make rabbitmq-stop         # Stop RabbitMQ only
+make rabbitmq-ui           # Open management UI
+make rabbitmq-logs         # View RabbitMQ logs
+make rabbitmq-status       # Check RabbitMQ status
 
-# Pull and deploy
-docker pull your-registry.com/ims:v1.0.0
-IMS_IMAGE=your-registry.com/ims:v1.0.0 make docker-up-prod
+# Maintenance
+make docker-clean          # Clean images and volumes
+make docker-prune          # Prune unused resources
 ```
 
-### Deployment Checklist
-- [ ] Environment variables configured
-- [ ] Database migrations applied
-- [ ] SSL certificates in place (if not using reverse proxy)
-- [ ] Monitoring and logging configured
-- [ ] Health checks enabled
-- [ ] Backup strategy implemented
-- [ ] Docker images built and pushed
-- [ ] Resource limits configured
-- [ ] Network security configured
+### Docker Configuration
+
+Environment variables can be set in:
+- `.env` file (for docker-compose)
+- `docker/.env.template` (template for production)
+
+### Multi-stage Dockerfile
+
+The project uses a multi-stage Dockerfile:
+
+```dockerfile
+# Build stage
+FROM golang:1.21-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN make build
+
+# Runtime stage
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates tzdata
+WORKDIR /app
+COPY --from=builder /app/bin/ims-server .
+EXPOSE 8080
+CMD ["./ims-server"]
+```
+
+### Health Checks
+
+Docker services include health checks:
+
+```yaml
+healthcheck:
+  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
+```
 
 ## Troubleshooting
 
 ### Common Issues
 
-**Build Failures**:
+#### Database Connection Issues
 ```bash
-# Clean and rebuild
-make clean
-go mod tidy
-make build
-```
+# Check database connectivity
+psql $DATABASE_URL -c "SELECT 1;"
 
-**Database Connection**:
-```bash
-# Test connection
-psql $DATABASE_URL -c "SELECT 1"
+# Check database logs
+docker logs postgres
 
 # Check migrations
-psql $DATABASE_URL -c "SELECT * FROM migration_history"
+./scripts/migrate.sh --status
 ```
 
-**Swagger Generation**:
+#### RabbitMQ Connection Issues
 ```bash
-# Reinstall swag
-go install github.com/swaggo/swag/cmd/swag@latest
-make swagger-gen
+# Check RabbitMQ status
+docker logs rabbitmq
+
+# Test connection
+curl -u guest:guest http://localhost:15672/api/overview
+
+# Check queues
+curl -u guest:guest http://localhost:15672/api/queues
 ```
 
-**Performance Issues**:
-- Check database indexes
-- Monitor connection pools
-- Review batch sizes
-- Check webhook timeouts
-
-### Logging
+#### Queue Processing Issues
 ```bash
-# View logs
-tail -f /var/log/ims/app.log
+# Check application logs
+docker logs ims-app
 
-# JSON log parsing
-tail -f app.log | jq '.'
+# Check scheduler status
+curl -H "Authorization: your-api-key" http://localhost:8080/api/health
 
-# Filter by level
-tail -f app.log | jq 'select(.level=="error")'
+# Monitor queue sizes (RabbitMQ)
+make rabbitmq-ui
 ```
 
-### Monitoring Endpoints
-- Health check: `GET /api/health`
-- Metrics: Built-in Go metrics
-- Audit logs: `GET /api/audit/stats`
+#### Performance Issues
+```bash
+# Run benchmarks
+make test-benchmark
 
-### Development Workflow
-1. **Feature Development**:
-   - Create feature branch
-   - Add tests first (TDD)
-   - Implement feature
-   - Add swagger docs
-   - Update migration if needed
+# Check database indexes
+psql $DATABASE_URL -c "\d+ messages"
 
-2. **Code Quality**:
-   ```bash
-   make fmt         # Format code
-   make lint        # Run linter
-   make test        # Run tests
-   make swagger     # Generate docs
-   ```
+# Monitor resource usage
+docker stats
+```
 
-3. **Integration**:
-   - Test with real database
-   - Verify webhook integration
-   - Test scheduler functionality
-   - Review API documentation
+### Debugging
 
-This guide provides comprehensive technical information for developing, testing, and deploying the IMS application. 
+#### Enable Debug Mode
+```bash
+# Set log level
+LOG_LEVEL=debug
+
+# Enable SQL query logging
+DATABASE_LOG_QUERIES=true
+
+# Enable detailed HTTP logging
+HTTP_LOG_REQUESTS=true
+```
+
+#### Profiling
+```bash
+# Enable pprof endpoint
+PPROF_ENABLED=true
+
+# Access profiling
+go tool pprof http://localhost:8080/debug/pprof/profile
+```
+
+### Monitoring
+
+#### Health Check Endpoint
+```bash
+curl http://localhost:8080/api/health
+```
+
+Response includes:
+- Database connectivity
+- Cache connectivity (if enabled)
+- RabbitMQ connectivity (if enabled)
+- Scheduler status
+
+#### Metrics
+
+The application exposes metrics for monitoring:
+
+```bash
+# Basic metrics
+curl http://localhost:8080/api/metrics
+
+# Detailed audit logs
+curl -H "Authorization: your-api-key" \
+     "http://localhost:8080/api/audit?limit=100"
+```
+
+#### Log Analysis
+
+```bash
+# View application logs
+docker logs ims-app
+
+# Follow logs in real-time
+docker logs -f ims-app
+
+# Search for specific events
+docker logs ims-app 2>&1 | grep "ERROR"
+```
+
+### Migration Issues
+
+#### Check Migration Status
+```bash
+# List applied migrations
+psql $DATABASE_URL -c "SELECT * FROM migration_history ORDER BY applied_at;"
+
+# Check for pending migrations
+./scripts/migrate.sh --dry-run
+```
+
+#### Reset Database (Development Only)
+```bash
+# Drop and recreate database
+dropdb insider_messages
+createdb insider_messages
+./scripts/migrate.sh
+```

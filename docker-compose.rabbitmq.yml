@@ -1,0 +1,28 @@
+version: '3.8'
+
+# Docker Compose override file for RabbitMQ integration
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.rabbitmq.yml up
+
+services:
+  # Override IMS service to enable RabbitMQ
+  ims:
+    environment:
+      # Enable RabbitMQ queue instead of database polling
+      RABBITMQ_ENABLED: true
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      RABBITMQ_MESSAGES_QUEUE: messages.pending
+      RABBITMQ_RETRY_QUEUE: messages.retry
+      RABBITMQ_DLQ: messages.dead_letter
+      RABBITMQ_MAX_RETRIES: 5
+      RABBITMQ_RETRY_DELAY_MULTIPLIER: 60
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Enable RabbitMQ service (removes profile restriction)
+  rabbitmq:
+    profiles: []  # Remove the rabbitmq profile to start by default 

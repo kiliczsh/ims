@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ims/internal/domain"
+	"ims/internal/queue"
 	"ims/internal/repository"
 
 	"github.com/google/uuid"
@@ -25,23 +26,26 @@ func validatePhoneNumber(phoneNumber string) bool {
 }
 
 type MessageService struct {
-	repo      repository.MessageRepository
-	cache     repository.CacheRepository
-	webhook   *WebhookClient
-	maxLength int
+	repo         repository.MessageRepository
+	cache        repository.CacheRepository
+	webhook      *WebhookClient
+	queueManager queue.QueueManager
+	maxLength    int
 }
 
 func NewMessageService(
 	repo repository.MessageRepository,
 	cache repository.CacheRepository,
 	webhook *WebhookClient,
+	queueManager queue.QueueManager,
 	maxLength int,
 ) *MessageService {
 	return &MessageService{
-		repo:      repo,
-		cache:     cache,
-		webhook:   webhook,
-		maxLength: maxLength,
+		repo:         repo,
+		cache:        cache,
+		webhook:      webhook,
+		queueManager: queueManager,
+		maxLength:    maxLength,
 	}
 }
 
@@ -199,9 +203,13 @@ func (s *MessageService) CreateMessage(ctx context.Context, phoneNumber, content
 		UpdatedAt:   time.Now(),
 	}
 
-	if err := s.repo.CreateMessage(ctx, msg); err != nil {
-		return nil, fmt.Errorf("failed to create message: %w", err)
+	// Publish to queue (database or RabbitMQ based on configuration)
+	messageQueue := s.queueManager.GetQueue()
+	if err := messageQueue.Publish(ctx, msg); err != nil {
+		return nil, fmt.Errorf("failed to publish message to queue: %w", err)
 	}
+
+	log.Printf("Message %s published to %s queue for %s", msg.ID, messageQueue.GetQueueType(), msg.PhoneNumber)
 
 	return msg, nil
 }

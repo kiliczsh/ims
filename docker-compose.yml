@@ -42,6 +42,30 @@ services:
       retries: 5
     command: redis-server --appendonly yes
 
+  # RabbitMQ Message Broker (Optional - for high-performance scenarios)
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: ims-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"      # AMQP port
+      - "15672:15672"    # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ims-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+    profiles:
+      - rabbitmq  # Only start when specifically requested
+
   # IMS Application
   ims:
     build:
@@ -82,6 +106,15 @@ services:
       
       # Message Configuration
       MESSAGE_MAX_LENGTH: 160
+      
+      # RabbitMQ Configuration (Optional - uncomment to enable)
+      # RABBITMQ_ENABLED: true
+      # RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      # RABBITMQ_MESSAGES_QUEUE: messages.pending
+      # RABBITMQ_RETRY_QUEUE: messages.retry
+      # RABBITMQ_DLQ: messages.dead_letter
+      # RABBITMQ_MAX_RETRIES: 5
+      # RABBITMQ_RETRY_DELAY_MULTIPLIER: 60
     networks:
       - ims-network
     depends_on:
@@ -126,4 +159,6 @@ volumes:
   postgres_data:
     name: ims-postgres-data
   redis_data:
-    name: ims-redis-data 
+    name: ims-redis-data
+  rabbitmq_data:
+    name: ims-rabbitmq-data 

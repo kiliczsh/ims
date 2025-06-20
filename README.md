@@ -1,25 +1,28 @@
-# IMS
+# IMS - Insider Message Sender
 
-A Go-based message scheduling and sending service with comprehensive audit logging and dynamic API documentation.
+A reliable Go-based service that automatically sends messages via webhooks with comprehensive audit logging and monitoring.
 
 ## What is IMS?
 
-IMS (Insider Message Sender) is a reliable service that automatically sends messages via webhooks. It queues messages in a database and processes them in batches at configurable intervals.
+IMS queues messages in a database and processes them in batches at configurable intervals, sending them to webhook endpoints. Perfect for automated messaging, notifications, and integrations.
 
 ## Key Features
 
-- 📨 **Automatic Message Scheduling** - Set it and forget it message processing
-- 🔄 **Webhook Integration** - Send messages to any webhook endpoint
+- 📨 **Automatic Message Scheduling** - Process messages at configurable intervals
+- 🔄 **Webhook Integration** - Send messages to any HTTP endpoint
 - 📊 **Complete Audit Trail** - Track every message and system event
-- 🏥 **Health Monitoring** - Monitor database, cache, and scheduler status
-- 📚 **Interactive API Documentation** - Built-in Swagger UI for easy testing
+- 🏥 **Health Monitoring** - Monitor system components and status
+- 📚 **Interactive API Documentation** - Built-in Swagger UI for testing
 - 🚀 **Simple Deployment** - Single binary with Docker support
+- 🐰 **High-Performance Queue** - Optional RabbitMQ for scale (>100 msg/min)
+- 🔄 **Automatic Retries** - Smart retry logic with exponential backoff
+- 💀 **Dead Letter Queue** - Handle failed messages gracefully
 
 ## Quick Start
 
 ### Prerequisites
-- **Go 1.21+** or **Docker**
-- **PostgreSQL database** (local or remote)
+- **Docker** (recommended) or **Go 1.21+**
+- **PostgreSQL database** (included in Docker setup)
 - **Webhook endpoint** (get a free one at [webhook.site](https://webhook.site))
 
 ### 1. Get the Code
@@ -28,56 +31,73 @@ git clone <repository-url>
 cd ims
 ```
 
-### 2. Configure
-```bash
-# Copy configuration template
-cp .env.example .env
-
-# Edit with your settings
-nano .env
-```
-
-Required settings:
-- `DATABASE_URL` - Your PostgreSQL connection string
-- `WEBHOOK_URL` - Where to send messages (webhook.site URL works great for testing)
-- `WEBHOOK_AUTH_KEY` - API key for accessing the service
-
-### 3. Run
-
-#### Option A: Docker (Recommended)
+### 2. Quick Setup with Docker
 ```bash
 # Start all services (PostgreSQL + Redis + IMS)
 make docker-up
 
-# The service will start automatically with database setup
+# The service starts automatically on http://localhost:8080
 ```
 
-#### Option B: Local Development
+### 3. Configure Your Webhook
 ```bash
-# Setup database and start
-make setup-dev
-make migrate
-make run
+# Edit configuration
+nano .env
+
+# Set your webhook URL (required)
+WEBHOOK_URL=https://webhook.site/your-unique-url
+WEBHOOK_AUTH_KEY=your-secret-api-key
 ```
 
-The service will start on `http://localhost:8080`
+### 4. Start Processing Messages
+Visit `http://localhost:8080/api/docs` for interactive API documentation.
 
-## Using the Service
-
-### View API Documentation
-Open `http://localhost:8080/api/docs` in your browser for interactive API documentation.
-
-### Check Health
 ```bash
-curl http://localhost:8080/api/health
-```
-
-### Start Message Processing
-```bash
+# Start the message scheduler
 curl -X POST http://localhost:8080/api/control \
   -H "Content-Type: application/json" \
   -H "Authorization: your-api-key" \
   -d '{"action": "start"}'
+```
+
+## High-Performance Option: RabbitMQ
+
+For high-volume scenarios (>100 messages/minute), enable RabbitMQ:
+
+```bash
+# Start with RabbitMQ queue
+make docker-up-rabbitmq
+
+# Monitor RabbitMQ
+make rabbitmq-ui  # Opens http://localhost:15672
+```
+
+## How It Works
+
+1. **Add Messages** - Insert messages into the database (status: 'pending')
+2. **Start Scheduler** - Use the control API to begin processing
+3. **Batch Processing** - Messages are processed in configurable batches
+4. **Webhook Delivery** - Each message is sent to your webhook endpoint
+5. **Status Tracking** - Monitor progress through APIs and logs
+6. **Retry Logic** - Failed messages are retried with exponential backoff
+7. **Dead Letter Queue** - Permanently failed messages are stored for review
+
+## Using the Service
+
+### Check Service Health
+```bash
+curl http://localhost:8080/api/health
+```
+
+### Create a Message
+```bash
+curl -X POST http://localhost:8080/api/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your-api-key" \
+  -d '{
+    "phone_number": "+1234567890",
+    "content": "Hello from IMS!"
+  }'
 ```
 
 ### View Sent Messages
@@ -86,108 +106,67 @@ curl "http://localhost:8080/api/messages/sent" \
   -H "Authorization: your-api-key"
 ```
 
-## How It Works
+### View Dead Letter Queue
+```bash
+curl "http://localhost:8080/api/messages/dead-letter" \
+  -H "Authorization: your-api-key"
+```
 
-1. **Add Messages** - Insert messages into the database with status 'pending'
-2. **Start Scheduler** - Use the control API to start automatic processing
-3. **Batch Processing** - The service processes messages in configurable batches
-4. **Webhook Delivery** - Messages are sent to your webhook endpoint
-5. **Status Tracking** - Monitor progress through audit logs and API endpoints
+### Control the Scheduler
+```bash
+# Start processing
+curl -X POST http://localhost:8080/api/control \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your-api-key" \
+  -d '{"action": "start"}'
 
-## Configuration Options
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `SERVER_PORT` | 8080 | HTTP server port |
-| `SCHEDULER_INTERVAL` | 2m | How often to process messages |
-| `SCHEDULER_BATCH_SIZE` | 2 | Messages per batch |
-| `MESSAGE_MAX_LENGTH` | 160 | Maximum message content length |
+# Stop processing
+curl -X POST http://localhost:8080/api/control \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your-api-key" \
+  -d '{"action": "stop"}'
+```
 
 ## API Endpoints
 
-- **Health Check**: `GET /api/health` (public)
-- **Control Scheduler**: `POST /api/control` (requires auth)
-- **View Messages**: `GET /api/messages/sent` (requires auth)
-- **Audit Logs**: `GET /api/audit` (requires auth)
-- **API Documentation**: `GET /api/docs` (public)
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/health` | GET | No | Service health check |
+| `/api/docs` | GET | No | Interactive API documentation |
+| `/api/messages` | POST | Yes | Create a new message |
+| `/api/messages/sent` | GET | Yes | List sent messages |
+| `/api/messages/dead-letter` | GET | Yes | List failed messages |
+| `/api/control` | POST | Yes | Start/stop scheduler |
+| `/api/audit` | GET | Yes | View audit logs |
 
-## Testing
+## Configuration
 
-IMS includes a comprehensive testing framework with unit tests, integration tests, and benchmarks.
+Key environment variables:
 
-### Quick Testing
-```bash
-# Run basic unit tests
-make test
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `DATABASE_URL` | - | PostgreSQL connection string (required) |
+| `WEBHOOK_URL` | - | Target webhook endpoint (required) |
+| `WEBHOOK_AUTH_KEY` | - | API key for authentication (required) |
+| `SERVER_PORT` | 8080 | HTTP server port |
+| `SCHEDULER_INTERVAL` | 2m | Message processing interval |
+| `SCHEDULER_BATCH_SIZE` | 2 | Messages per batch |
+| `RABBITMQ_ENABLED` | false | Enable RabbitMQ queue |
 
-# Run all tests with coverage
-make test-all-coverage
+## Queue Options Comparison
 
-# Watch tests during development
-make test-watch
-
-# Run tests for CI/CD
-make test-ci
-```
-
-### Testing Options
-- **Unit Tests**: Fast, isolated tests (>80% coverage required)
-- **Integration Tests**: Real database testing
-- **Benchmark Tests**: Performance measurements
-- **Race Detection**: Concurrent safety testing
-- **Coverage Reports**: HTML and XML formats
-
-See [docs/TESTING.md](docs/TESTING.md) for comprehensive testing documentation.
+| Feature | Database Queue (Default) | RabbitMQ Queue |
+|---------|-------------------------|----------------|
+| **Best For** | <100 messages/min | >100 messages/min |
+| **Setup** | Simple, no extra services | Requires RabbitMQ |
+| **Latency** | Higher (polling-based) | Lower (push-based) |
+| **Scaling** | Single instance | Multiple workers |
+| **Dependencies** | PostgreSQL only | PostgreSQL + RabbitMQ |
 
 ## Development
 
-For technical details, architecture information, and development setup, see [DEVELOPMENT.md](DEVELOPMENT.md).
-
-Quick development commands:
-```bash
-make help          # Show all available commands
-make dev           # Run with hot reload
-make test          # Run tests
-make swagger       # Generate API docs
-```
-
-## Docker Support
-
-### Quick Docker Start
-```bash
-# Start all services (includes PostgreSQL and Redis)
-make docker-up
-
-# View logs
-make docker-logs
-
-# Stop services
-make docker-down
-```
-
-### Docker Commands
-```bash
-# Build image
-make docker-build
-
-# Production deployment
-cp docker/.env.template .env
-# Edit .env with production values
-make docker-up-prod
-
-# Manual Docker run
-docker build -t ims .
-docker run -p 8080:8080 --env-file .env ims
-```
-
-See [docker/README.md](docker/README.md) for detailed Docker documentation.
-
-## Support
-
-- **API Documentation**: `http://localhost:8080/api/docs`
-- **Health Monitoring**: `http://localhost:8080/api/health`
-- **Technical Details**: [DEVELOPMENT.md](DEVELOPMENT.md)
+For technical details, architecture, setup instructions, and development workflows, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 
-This project is licensed under the MIT License.
+[MIT License](LICENSE)

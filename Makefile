@@ -1,4 +1,4 @@
-.PHONY: build run run-script run-script-setup test test-all test-coverage test-integration test-integration-coverage test-all-coverage test-benchmark test-race test-package test-watch test-verbose test-clean test-setup test-ci test-quick clean deps install-tools lint fmt help migrate migrate-with-data swagger swagger-gen swagger-install swagger-serve docker-build docker-build-tag docker-up docker-up-prod docker-down docker-down-prod docker-logs docker-logs-prod docker-restart docker-migrate docker-migrate-prod docker-status docker-shell docker-shell-prod docker-clean release release-minor release-major release-version release-docker version
+.PHONY: build run run-script run-script-setup test test-all test-coverage test-integration test-integration-coverage test-all-coverage test-benchmark test-race test-package test-watch test-verbose test-clean test-setup test-ci test-quick clean deps install-tools lint fmt help migrate migrate-with-data swagger swagger-gen swagger-install swagger-serve docker-build docker-build-tag docker-up docker-up-prod docker-down docker-down-prod docker-logs docker-logs-prod docker-restart docker-migrate docker-migrate-prod docker-status docker-shell docker-shell-prod docker-clean release release-minor release-major release-version release-docker version rabbitmq-start rabbitmq-stop rabbitmq-logs rabbitmq-ui rabbitmq-status
 
 # Build the application (legacy target - use build with bin dependency)
 
@@ -443,6 +443,72 @@ docker-shell-prod:
 	@echo "🐳 Opening shell in IMS production container..."
 	docker-compose -f docker-compose.prod.yml exec ims sh
 
+# Run with Docker Compose + RabbitMQ (high-performance)
+docker-up-rabbitmq:
+	@echo "🐳 Starting IMS with RabbitMQ for high-performance messaging..."
+	docker-compose -f docker-compose.yml -f docker-compose.rabbitmq.yml up -d
+	@echo "✅ IMS services started with RabbitMQ"
+	@echo "📖 API: http://localhost:8080"
+	@echo "📖 Docs: http://localhost:8080/api/docs"
+	@echo "📊 PostgreSQL: localhost:5432"
+	@echo "📊 Redis: localhost:6379"
+	@echo "🐰 RabbitMQ Management: http://localhost:15672 (guest/guest)"
+	@echo "🐰 RabbitMQ AMQP: localhost:5672"
+
+# Start only RabbitMQ service
+rabbitmq-start:
+	@echo "🐰 Starting RabbitMQ service..."
+	docker-compose --profile rabbitmq up rabbitmq -d
+	@echo "✅ RabbitMQ started"
+	@echo "🐰 Management UI: http://localhost:15672 (guest/guest)"
+	@echo "🐰 AMQP Port: localhost:5672"
+
+# Stop RabbitMQ service
+rabbitmq-stop:
+	@echo "🐰 Stopping RabbitMQ service..."
+	docker-compose stop rabbitmq
+	@echo "✅ RabbitMQ stopped"
+
+# View RabbitMQ logs
+rabbitmq-logs:
+	@echo "🐰 Viewing RabbitMQ logs..."
+	docker-compose logs -f rabbitmq
+
+# Open RabbitMQ Management UI
+rabbitmq-ui:
+	@echo "🐰 Opening RabbitMQ Management UI..."
+	@echo "🌐 http://localhost:15672"
+	@echo "👤 Username: guest"
+	@echo "🔑 Password: guest"
+	@if command -v open >/dev/null 2>&1; then \
+		open http://localhost:15672; \
+	elif command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open http://localhost:15672; \
+	else \
+		echo "💡 Please open http://localhost:15672 in your browser"; \
+	fi
+
+# Show RabbitMQ status and queue information
+rabbitmq-status:
+	@echo "🐰 RabbitMQ Status:"
+	@echo ""
+	@if docker-compose ps rabbitmq | grep -q "Up"; then \
+		echo "✅ RabbitMQ is running"; \
+		echo ""; \
+		echo "📊 Queue Overview:"; \
+		curl -s -u guest:guest http://localhost:15672/api/overview 2>/dev/null | \
+		grep -o '"queue_totals":{[^}]*}' | \
+		sed 's/[{}"]//g' | \
+		sed 's/queue_totals://g' | \
+		sed 's/,/\n/g' | \
+		sed 's/^/  /' || echo "  Unable to fetch queue statistics"; \
+		echo ""; \
+		echo "🔗 Management UI: http://localhost:15672"; \
+	else \
+		echo "❌ RabbitMQ is not running"; \
+		echo "💡 Start with: make rabbitmq-start"; \
+	fi
+
 # =============================================================================
 # Release Management
 # =============================================================================
@@ -500,6 +566,7 @@ help:
 	@echo "  docker-build     - Build Docker image"
 	@echo "  docker-build-tag - Build Docker image with custom tag (TAG=version)"
 	@echo "  docker-up        - Start services with Docker Compose (development)"
+	@echo "  docker-up-rabbitmq - Start services with RabbitMQ (high-performance)"
 	@echo "  docker-up-prod   - Start services with Docker Compose (production)"
 	@echo "  docker-down      - Stop Docker Compose services"
 	@echo "  docker-down-prod - Stop production Docker Compose services"
@@ -512,6 +579,13 @@ help:
 	@echo "  docker-shell     - Shell into running container"
 	@echo "  docker-shell-prod- Shell into production container"
 	@echo "  docker-clean     - Clean Docker resources"
+	@echo ""
+	@echo "🐰 RabbitMQ:"
+	@echo "  rabbitmq-start   - Start only RabbitMQ service"
+	@echo "  rabbitmq-stop    - Stop RabbitMQ service"
+	@echo "  rabbitmq-logs    - View RabbitMQ logs"
+	@echo "  rabbitmq-ui      - Open RabbitMQ Management UI"
+	@echo "  rabbitmq-status  - Show RabbitMQ status and queue info"
 	@echo ""
 	@echo "📦 Release Management:"
 	@echo "  release          - Create new patch release (1.0.0 -> 1.0.1)"

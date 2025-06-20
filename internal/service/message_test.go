@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"ims/internal/domain"
+	"ims/internal/queue"
 	"ims/internal/repository"
 	"testing"
 	"time"
@@ -11,13 +12,77 @@ import (
 	"github.com/google/uuid"
 )
 
+// MockQueueManager implements the queue.QueueManager interface for testing
+type MockQueueManager struct {
+	mockQueue *MockMessageQueue
+}
+
+func NewMockQueueManager() *MockQueueManager {
+	return &MockQueueManager{
+		mockQueue: NewMockMessageQueue(),
+	}
+}
+
+func (m *MockQueueManager) GetQueue() queue.MessageQueue {
+	return m.mockQueue
+}
+
+func (m *MockQueueManager) IsRabbitMQEnabled() bool {
+	return false // For tests, default to database queue
+}
+
+// MockMessageQueue implements the queue.MessageQueue interface for testing
+type MockMessageQueue struct {
+	PublishFunc func(ctx context.Context, message *domain.Message) error
+	ConsumeFunc func(ctx context.Context, handler queue.MessageHandler) error
+	CloseFunc   func() error
+	messages    []*domain.Message
+}
+
+func NewMockMessageQueue() *MockMessageQueue {
+	return &MockMessageQueue{
+		messages: make([]*domain.Message, 0),
+	}
+}
+
+func (m *MockMessageQueue) Publish(ctx context.Context, message *domain.Message) error {
+	if m.PublishFunc != nil {
+		return m.PublishFunc(ctx, message)
+	}
+	m.messages = append(m.messages, message)
+	return nil
+}
+
+func (m *MockMessageQueue) Consume(ctx context.Context, handler queue.MessageHandler) error {
+	if m.ConsumeFunc != nil {
+		return m.ConsumeFunc(ctx, handler)
+	}
+	return nil
+}
+
+func (m *MockMessageQueue) Close() error {
+	if m.CloseFunc != nil {
+		return m.CloseFunc()
+	}
+	return nil
+}
+
+func (m *MockMessageQueue) GetQueueType() queue.QueueType {
+	return queue.QueueTypeDatabase
+}
+
+func (m *MockMessageQueue) GetMessages() []*domain.Message {
+	return m.messages
+}
+
 func TestNewMessageService(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
+	queueManager := NewMockQueueManager()
 	maxLength := 1000
 
-	service := NewMessageService(repo, cache, webhook, maxLength)
+	service := NewMessageService(repo, cache, webhook, queueManager, maxLength)
 
 	if service.repo != repo {
 		t.Error("Expected repo to be set correctly")
@@ -31,6 +96,10 @@ func TestNewMessageService(t *testing.T) {
 		t.Error("Expected webhook to be set correctly")
 	}
 
+	if service.queueManager != queueManager {
+		t.Error("Expected queueManager to be set correctly")
+	}
+
 	if service.maxLength != maxLength {
 		t.Errorf("Expected max length %d, got %d", maxLength, service.maxLength)
 	}
@@ -40,7 +109,8 @@ func TestMessageService_CreateMessage_Success(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 1000)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
 
 	ctx := context.Background()
 	phoneNumber := "+1234567890"
@@ -72,9 +142,10 @@ func TestMessageService_CreateMessage_Success(t *testing.T) {
 		t.Error("Expected non-nil UUID")
 	}
 
-	// Verify message was created in repository
-	if repo.Count() != 1 {
-		t.Errorf("Expected 1 message in repository, got %d", repo.Count())
+	// Verify message was published to queue
+	mockQueue := queueManager.GetQueue().(*MockMessageQueue)
+	if len(mockQueue.GetMessages()) != 1 {
+		t.Errorf("Expected 1 message in queue, got %d", len(mockQueue.GetMessages()))
 	}
 }
 
@@ -82,7 +153,8 @@ func TestMessageService_CreateMessage_TooLong(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 10) // Very short max length
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 10) // Very short max length
 
 	ctx := context.Background()
 	phoneNumber := "+1234567890"
@@ -94,9 +166,10 @@ func TestMessageService_CreateMessage_TooLong(t *testing.T) {
 		t.Errorf("Expected ErrMessageTooLong, got %v", err)
 	}
 
-	// Verify no message was created in repository
-	if repo.Count() != 0 {
-		t.Errorf("Expected 0 messages in repository, got %d", repo.Count())
+	// Verify no message was published to queue
+	mockQueue := queueManager.GetQueue().(*MockMessageQueue)
+	if len(mockQueue.GetMessages()) != 0 {
+		t.Errorf("Expected 0 messages in queue, got %d", len(mockQueue.GetMessages()))
 	}
 }
 
@@ -104,11 +177,13 @@ func TestMessageService_CreateMessage_RepositoryError(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 1000)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
 
-	// Configure repository to return error
-	expectedError := errors.New("database error")
-	repo.CreateMessageFunc = func(ctx context.Context, message *domain.Message) error {
+	// Configure queue to return error
+	expectedError := errors.New("queue error")
+	mockQueue := queueManager.GetQueue().(*MockMessageQueue)
+	mockQueue.PublishFunc = func(ctx context.Context, message *domain.Message) error {
 		return expectedError
 	}
 
@@ -120,7 +195,7 @@ func TestMessageService_CreateMessage_RepositoryError(t *testing.T) {
 	}
 
 	if !errors.Is(err, expectedError) {
-		t.Errorf("Expected wrapped error containing database error, got %v", err)
+		t.Errorf("Expected wrapped error containing queue error, got %v", err)
 	}
 }
 
@@ -128,7 +203,8 @@ func TestMessageService_ProcessMessages_NoMessages(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 1000)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
 
 	ctx := context.Background()
 	err := service.ProcessMessages(ctx, 10)
@@ -142,7 +218,8 @@ func TestMessageService_ProcessMessages_RepositoryError(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 1000)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
 
 	// Configure repository to return error
 	expectedError := errors.New("database error")
@@ -166,7 +243,8 @@ func TestMessageService_GetSentMessages_Success(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 1000)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
 
 	// Add some test messages
 	sentMsg := &domain.Message{
@@ -199,33 +277,40 @@ func TestMessageService_GetSentMessages_Pagination(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 1000)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
+
+	// Add multiple test messages
+	for i := 0; i < 5; i++ {
+		msg := &domain.Message{
+			ID:          uuid.New(),
+			PhoneNumber: "+1234567890",
+			Content:     "Test message",
+			Status:      domain.StatusSent,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+		repo.AddMessage(msg)
+	}
 
 	ctx := context.Background()
 
-	tests := []struct {
-		name         string
-		page         int
-		pageSize     int
-		expectedPage int
-		expectedSize int
-	}{
-		{"Default page", 0, 20, 1, 20},
-		{"Negative page", -1, 20, 1, 20},
-		{"Large page size", 1, 200, 1, 100}, // Should be capped at 100
-		{"Small page size", 1, 0, 1, 20},    // Should default to 20
-		{"Valid values", 2, 10, 2, 10},
+	// Test first page
+	messages, err := service.GetSentMessages(ctx, 1, 3)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(messages) != 3 {
+		t.Errorf("Expected 3 messages on first page, got %d", len(messages))
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := service.GetSentMessages(ctx, tt.page, tt.pageSize)
-			if err != nil {
-				t.Errorf("Expected no error, got %v", err)
-			}
-			// Note: This test mainly verifies the method doesn't crash with edge case inputs
-			// The actual pagination logic is tested in the repository mock
-		})
+	// Test second page
+	messages, err = service.GetSentMessages(ctx, 2, 3)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(messages) != 2 {
+		t.Errorf("Expected 2 messages on second page, got %d", len(messages))
 	}
 }
 
@@ -233,7 +318,8 @@ func TestMessageService_SendMessage_TooLong(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 10) // Very short max length
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 10) // Very short max length
 
 	// Create a message that's too long
 	msg := &domain.Message{
@@ -241,26 +327,36 @@ func TestMessageService_SendMessage_TooLong(t *testing.T) {
 		PhoneNumber: "+1234567890",
 		Content:     "This message is way too long for the limit",
 		Status:      domain.StatusPending,
+		RetryCount:  0,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
-	repo.AddMessage(msg)
 
 	ctx := context.Background()
 	err := service.sendMessage(ctx, msg)
 
 	if err != nil {
-		t.Fatalf("Expected no error (status update should succeed), got %v", err)
+		t.Errorf("Expected no error from sendMessage (should handle internally), got %v", err)
 	}
 
-	// Verify message status was updated to failed
-	updatedMsg, err := repo.GetMessage(ctx, msg.ID)
+	// Verify message was moved to dead letter queue
+	deadLetterMessages, err := repo.GetDeadLetterMessages(ctx, 0, 10)
 	if err != nil {
-		t.Fatalf("Failed to get updated message: %v", err)
+		t.Fatalf("Failed to get dead letter messages: %v", err)
 	}
 
-	if updatedMsg.Status != domain.StatusFailed {
-		t.Errorf("Expected status %s, got %s", domain.StatusFailed, updatedMsg.Status)
+	if len(deadLetterMessages) != 1 {
+		t.Errorf("Expected 1 message in dead letter queue, got %d", len(deadLetterMessages))
+	}
+
+	if len(deadLetterMessages) > 0 {
+		dlMsg := deadLetterMessages[0]
+		if dlMsg.OriginalMessageID != msg.ID {
+			t.Errorf("Expected original message ID %s, got %s", msg.ID, dlMsg.OriginalMessageID)
+		}
+		if dlMsg.FailureReason != "Message content exceeds maximum length" {
+			t.Errorf("Expected specific failure reason, got %s", dlMsg.FailureReason)
+		}
 	}
 }
 
@@ -268,9 +364,10 @@ func TestMessageService_SendMessage_UpdateStatusError(t *testing.T) {
 	repo := repository.NewMockMessageRepository()
 	cache := repository.NewMockCacheRepository()
 	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
-	service := NewMessageService(repo, cache, webhook, 1000)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
 
-	// Configure repository to return error on status update
+	// Configure repository to return error when updating status
 	expectedError := errors.New("database error")
 	repo.UpdateMessageStatusFunc = func(ctx context.Context, id uuid.UUID, status domain.MessageStatus, messageID *string) error {
 		return expectedError
@@ -281,6 +378,7 @@ func TestMessageService_SendMessage_UpdateStatusError(t *testing.T) {
 		PhoneNumber: "+1234567890",
 		Content:     "Test message",
 		Status:      domain.StatusPending,
+		RetryCount:  0,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
@@ -315,6 +413,96 @@ func (m *MockWebhookClient) Send(ctx context.Context, phoneNumber, content strin
 		Message:   "Message sent successfully",
 		MessageID: "mock-msg-123",
 	}, nil
+}
+
+func TestMessageService_CreateMessage_InvalidPhoneNumber(t *testing.T) {
+	repo := repository.NewMockMessageRepository()
+	cache := repository.NewMockCacheRepository()
+	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
+
+	tests := []struct {
+		name        string
+		phoneNumber string
+	}{
+		{"Empty phone number", ""},
+		{"Missing plus sign", "1234567890"},
+		{"Only plus sign", "+"},
+		{"Plus with no digits", "+abc"},
+		{"Plus with single digit", "+1"},
+		{"Too short", "+12"},
+		{"Too long", "+123456789012345678"},
+		{"Invalid characters", "+123-456-7890"},
+		{"Spaces", "+123 456 7890"},
+		{"Starting with zero", "+01234567890"},
+		{"Just spaces", "   "},
+		{"Tabs and newlines", "\t+1234567890\n"},
+	}
+
+	ctx := context.Background()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.CreateMessage(ctx, tt.phoneNumber, "Test message")
+
+			if err != domain.ErrInvalidPhoneNumber {
+				t.Errorf("Expected ErrInvalidPhoneNumber, got %v", err)
+			}
+
+			// Verify no message was published to queue
+			mockQueue := queueManager.GetQueue().(*MockMessageQueue)
+			if len(mockQueue.GetMessages()) != 0 {
+				t.Errorf("Expected 0 messages in queue, got %d", len(mockQueue.GetMessages()))
+			}
+		})
+	}
+}
+
+func TestMessageService_CreateMessage_ValidPhoneNumber(t *testing.T) {
+	repo := repository.NewMockMessageRepository()
+	cache := repository.NewMockCacheRepository()
+	webhook := NewWebhookClient("http://example.com", "test-key", 30*time.Second, 3)
+	queueManager := NewMockQueueManager()
+	service := NewMessageService(repo, cache, webhook, queueManager, 1000)
+
+	tests := []struct {
+		name        string
+		phoneNumber string
+		expected    string // Expected cleaned phone number
+	}{
+		{"US number", "+1234567890", "+1234567890"},
+		{"International short", "+123456789", "+123456789"},
+		{"International long", "+12345678901234", "+12345678901234"},
+		{"Maximum length", "+123456789012345", "+123456789012345"},
+		{"Trimmed spaces", "  +1234567890  ", "+1234567890"},
+	}
+
+	ctx := context.Background()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clear queue before test
+			queueManager.mockQueue.messages = make([]*domain.Message, 0)
+
+			msg, err := service.CreateMessage(ctx, tt.phoneNumber, "Test message")
+
+			if err != nil {
+				t.Errorf("Expected no error, got %v", err)
+				return
+			}
+
+			if msg.PhoneNumber != tt.expected {
+				t.Errorf("Expected phone number %s, got %s", tt.expected, msg.PhoneNumber)
+			}
+
+			// Verify message was published to queue
+			mockQueue := queueManager.GetQueue().(*MockMessageQueue)
+			if len(mockQueue.GetMessages()) != 1 {
+				t.Errorf("Expected 1 message in queue, got %d", len(mockQueue.GetMessages()))
+			}
+		})
+	}
 }
 
 // Note: The following tests would require modification of the MessageService

@@ -28,6 +28,7 @@ import (
 	"os/signal"
 
 	"ims/internal/config"
+	"ims/internal/queue"
 	"ims/internal/repository"
 	"ims/internal/repository/postgres"
 	redisRepo "ims/internal/repository/redis"
@@ -115,11 +116,25 @@ func main() {
 		cfg.Webhook.MaxRetries,
 	)
 
+	// Initialize queue manager (defaults to database queue)
+	queueManager, err := queue.NewManager(cfg, messageRepo)
+	if err != nil {
+		log.Fatalf("Failed to initialize queue manager: %v", err)
+	}
+	defer func() {
+		if err := queueManager.Close(); err != nil {
+			log.Printf("Error closing queue manager: %v", err)
+		}
+	}()
+
+	log.Printf("Initialized %s queue", queueManager.GetQueueType())
+
 	// Initialize message service
 	messageService := service.NewMessageService(
 		messageRepo,
 		cacheRepo,
 		webhookClient,
+		queueManager,
 		cfg.Message.MaxLength,
 	)
 
