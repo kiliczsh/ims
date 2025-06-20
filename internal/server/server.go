@@ -46,6 +46,7 @@ func NewServer(
 	// Routes
 	mux.Handle("/api/health", middleware.LoggingMiddleware(http.HandlerFunc(healthHandler.Handle)))
 	mux.Handle("/api/control", middleware.LoggingMiddleware(authMiddleware(http.HandlerFunc(controlHandler.Handle))))
+	mux.Handle("/api/messages", middleware.LoggingMiddleware(authMiddleware(http.HandlerFunc(messageHandler.CreateMessage))))
 	mux.Handle("/api/messages/sent", middleware.LoggingMiddleware(authMiddleware(http.HandlerFunc(messageHandler.GetSentMessages))))
 
 	// Audit routes

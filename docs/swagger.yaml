@@ -123,6 +123,33 @@ definitions:
         example: true
         type: boolean
     type: object
+  handlers.CreateMessageRequest:
+    properties:
+      content:
+        example: Hello, this is a test message
+        type: string
+      phone_number:
+        example: "+1234567890"
+        type: string
+    type: object
+  handlers.CreateMessageResponse:
+    properties:
+      content:
+        example: Hello, this is a test message
+        type: string
+      created_at:
+        example: "2023-12-01T10:00:00Z"
+        type: string
+      id:
+        example: 123e4567-e89b-12d3-a456-426614174000
+        type: string
+      phone_number:
+        example: "+1234567890"
+        type: string
+      status:
+        example: pending
+        type: string
+    type: object
   handlers.ErrorResponse:
     properties:
       error:
@@ -432,6 +459,38 @@ paths:
       summary: Health Check
       tags:
       - health
+  /messages:
+    post:
+      consumes:
+      - application/json
+      description: Create a new message that will be queued for sending
+      parameters:
+      - description: Message details
+        in: body
+        name: message
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.CreateMessageRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/handlers.CreateMessageResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      security:
+      - ApiKeyAuth: []
+      summary: Create Message
+      tags:
+      - messages
   /messages/sent:
     get:
       consumes:

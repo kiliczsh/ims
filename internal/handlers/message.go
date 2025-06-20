@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"ims/internal/domain"
 	"ims/internal/service"
@@ -18,6 +19,90 @@ type MessageHandler struct {
 
 func NewMessageHandler(service *service.MessageService) *MessageHandler {
 	return &MessageHandler{service: service}
+}
+
+// CreateMessageRequest represents the request body for creating a new message
+type CreateMessageRequest struct {
+	PhoneNumber string `json:"phone_number" example:"+1234567890"`
+	Content     string `json:"content" example:"Hello, this is a test message"`
+}
+
+// CreateMessageResponse represents the response for a successfully created message
+type CreateMessageResponse struct {
+	ID          string `json:"id" example:"123e4567-e89b-12d3-a456-426614174000"`
+	PhoneNumber string `json:"phone_number" example:"+1234567890"`
+	Content     string `json:"content" example:"Hello, this is a test message"`
+	Status      string `json:"status" example:"pending"`
+	CreatedAt   string `json:"created_at" example:"2023-12-01T10:00:00Z"`
+}
+
+// CreateMessage creates a new message for processing
+// @Summary      Create Message
+// @Description  Create a new message that will be queued for sending
+// @Tags         messages
+// @Accept       json
+// @Produce      json
+// @Param        message body CreateMessageRequest true "Message details"
+// @Success      201 {object} CreateMessageResponse
+// @Failure      400 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Security     ApiKeyAuth
+// @Router       /messages [post]
+func (h *MessageHandler) CreateMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req CreateMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON request body", http.StatusBadRequest)
+		return
+	}
+
+	// Basic validation
+	if strings.TrimSpace(req.PhoneNumber) == "" {
+		http.Error(w, "Phone number is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(req.Content) == "" {
+		http.Error(w, "Message content is required", http.StatusBadRequest)
+		return
+	}
+
+	// Create the message
+	message, err := h.service.CreateMessage(r.Context(), req.PhoneNumber, req.Content)
+	if err != nil {
+		log.Printf("Failed to create message: %v", err)
+		if err == domain.ErrMessageTooLong {
+			http.Error(w, "Message content exceeds maximum length", http.StatusBadRequest)
+			return
+		}
+		if err == domain.ErrInvalidPhoneNumber {
+			http.Error(w, "Invalid phone number format", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "Failed to create message", http.StatusInternalServerError)
+		return
+	}
+
+	// Prepare response
+	resp := CreateMessageResponse{
+		ID:          message.ID.String(),
+		PhoneNumber: message.PhoneNumber,
+		Content:     message.Content,
+		Status:      string(message.Status),
+		CreatedAt:   message.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("Error encoding JSON response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
 }
 
 // SentMessagesResponse represents a paginated list of sent messages

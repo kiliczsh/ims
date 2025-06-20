@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
 	"ims/internal/domain"
@@ -11,6 +13,16 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// phoneNumberRegex defines a basic pattern for phone number validation
+// Accepts formats like: +1234567890, +12345678901, +123456789012, etc.
+var phoneNumberRegex = regexp.MustCompile(`^\+[1-9]\d{1,14}$`)
+
+// validatePhoneNumber performs basic validation on phone number format
+func validatePhoneNumber(phoneNumber string) bool {
+	trimmed := strings.TrimSpace(phoneNumber)
+	return phoneNumberRegex.MatchString(trimmed)
+}
 
 type MessageService struct {
 	repo      repository.MessageRepository
@@ -122,13 +134,19 @@ func (s *MessageService) GetSentMessages(ctx context.Context, page, pageSize int
 }
 
 func (s *MessageService) CreateMessage(ctx context.Context, phoneNumber, content string) (*domain.Message, error) {
+	// Validate phone number format
+	if !validatePhoneNumber(phoneNumber) {
+		return nil, domain.ErrInvalidPhoneNumber
+	}
+
+	// Validate content length
 	if len(content) > s.maxLength {
 		return nil, domain.ErrMessageTooLong
 	}
 
 	msg := &domain.Message{
 		ID:          uuid.New(),
-		PhoneNumber: phoneNumber,
+		PhoneNumber: strings.TrimSpace(phoneNumber),
 		Content:     content,
 		Status:      domain.StatusPending,
 		RetryCount:  0,
