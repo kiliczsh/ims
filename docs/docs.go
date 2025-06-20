@@ -470,6 +470,57 @@ const docTemplate = `{
                 }
             }
         },
+        "/messages/dead-letter": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Retrieve a paginated list of messages that failed permanently and were moved to the dead letter queue",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "messages"
+                ],
+                "summary": "Get Dead Letter Messages",
+                "parameters": [
+                    {
+                        "minimum": 1,
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "maximum": 100,
+                        "minimum": 1,
+                        "type": "integer",
+                        "description": "Page size (default: 20, max: 100)",
+                        "name": "page_size",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.DeadLetterMessagesResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/messages/sent": {
             "get": {
                 "security": [
@@ -628,6 +679,51 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.DeadLetterMessage": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "example": "Hello, this is a test message"
+                },
+                "created_at": {
+                    "type": "string",
+                    "example": "2023-12-01T10:15:00Z"
+                },
+                "failure_reason": {
+                    "type": "string",
+                    "example": "webhook timeout after 3 retries"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "123e4567-e89b-12d3-a456-426614174000"
+                },
+                "last_attempt_at": {
+                    "type": "string",
+                    "example": "2023-12-01T10:15:00Z"
+                },
+                "moved_to_dlq_at": {
+                    "type": "string",
+                    "example": "2023-12-01T10:15:00Z"
+                },
+                "original_message_id": {
+                    "type": "string",
+                    "example": "123e4567-e89b-12d3-a456-426614174000"
+                },
+                "phone_number": {
+                    "type": "string",
+                    "example": "+1234567890"
+                },
+                "retry_count": {
+                    "type": "integer",
+                    "example": 3
+                },
+                "webhook_response": {
+                    "type": "string",
+                    "example": "error: connection timeout"
+                }
+            }
+        },
         "domain.SentMessageResponse": {
             "type": "object",
             "properties": {
@@ -728,6 +824,25 @@ const docTemplate = `{
                 "status": {
                     "type": "string",
                     "example": "pending"
+                }
+            }
+        },
+        "handlers.DeadLetterMessagesResponse": {
+            "type": "object",
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.DeadLetterMessage"
+                    }
+                },
+                "page": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "page_size": {
+                    "type": "integer",
+                    "example": 20
                 }
             }
         },

@@ -12,15 +12,20 @@ import (
 
 // MockMessageRepository is a mock implementation of MessageRepository for testing
 type MockMessageRepository struct {
-	mu       sync.RWMutex
-	messages map[uuid.UUID]*domain.Message
+	mu                 sync.RWMutex
+	messages           map[uuid.UUID]*domain.Message
+	deadLetterMessages []*domain.DeadLetterMessage
 
 	// Control mock behavior
-	GetUnsentMessagesFunc   func(ctx context.Context, limit int) ([]*domain.Message, error)
-	UpdateMessageStatusFunc func(ctx context.Context, id uuid.UUID, status domain.MessageStatus, messageID *string) error
-	GetSentMessagesFunc     func(ctx context.Context, offset, limit int) ([]*domain.Message, error)
-	GetMessageFunc          func(ctx context.Context, id uuid.UUID) (*domain.Message, error)
-	CreateMessageFunc       func(ctx context.Context, message *domain.Message) error
+	GetUnsentMessagesFunc     func(ctx context.Context, limit int) ([]*domain.Message, error)
+	GetRetryableMessagesFunc  func(ctx context.Context, limit int) ([]*domain.Message, error)
+	UpdateMessageStatusFunc   func(ctx context.Context, id uuid.UUID, status domain.MessageStatus, messageID *string) error
+	UpdateMessageRetryFunc    func(ctx context.Context, id uuid.UUID, retryCount int, nextRetryAt *time.Time, failureReason *string) error
+	GetSentMessagesFunc       func(ctx context.Context, offset, limit int) ([]*domain.Message, error)
+	GetMessageFunc            func(ctx context.Context, id uuid.UUID) (*domain.Message, error)
+	CreateMessageFunc         func(ctx context.Context, message *domain.Message) error
+	MoveToDeadLetterQueueFunc func(ctx context.Context, message *domain.Message, failureReason string, webhookResponse *string) error
+	GetDeadLetterMessagesFunc func(ctx context.Context, offset, limit int) ([]*domain.DeadLetterMessage, error)
 }
 
 func NewMockMessageRepository() *MockMessageRepository {
@@ -143,6 +148,102 @@ func (m *MockMessageRepository) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.messages)
+}
+
+func (m *MockMessageRepository) GetRetryableMessages(ctx context.Context, limit int) ([]*domain.Message, error) {
+	if m.GetRetryableMessagesFunc != nil {
+		return m.GetRetryableMessagesFunc(ctx, limit)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var retryable []*domain.Message
+	now := time.Now()
+	for _, msg := range m.messages {
+		if msg.Status == domain.StatusFailed && msg.NextRetryAt != nil && msg.NextRetryAt.Before(now) && len(retryable) < limit {
+			retryable = append(retryable, msg)
+		}
+	}
+	return retryable, nil
+}
+
+func (m *MockMessageRepository) UpdateMessageRetry(ctx context.Context, id uuid.UUID, retryCount int, nextRetryAt *time.Time, failureReason *string) error {
+	if m.UpdateMessageRetryFunc != nil {
+		return m.UpdateMessageRetryFunc(ctx, id, retryCount, nextRetryAt, failureReason)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	msg, exists := m.messages[id]
+	if !exists {
+		return domain.ErrMessageNotFound
+	}
+
+	msg.RetryCount = retryCount
+	msg.NextRetryAt = nextRetryAt
+	msg.FailureReason = failureReason
+	msg.Status = domain.StatusFailed
+	now := time.Now()
+	msg.LastRetryAt = &now
+	msg.UpdatedAt = now
+
+	return nil
+}
+
+func (m *MockMessageRepository) MoveToDeadLetterQueue(ctx context.Context, message *domain.Message, failureReason string, webhookResponse *string) error {
+	if m.MoveToDeadLetterQueueFunc != nil {
+		return m.MoveToDeadLetterQueueFunc(ctx, message, failureReason, webhookResponse)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Create dead letter message
+	dlqMsg := &domain.DeadLetterMessage{
+		ID:                uuid.New(),
+		OriginalMessageID: message.ID,
+		PhoneNumber:       message.PhoneNumber,
+		Content:           message.Content,
+		RetryCount:        message.RetryCount,
+		FailureReason:     failureReason,
+		LastAttemptAt:     time.Now(),
+		MovedToDLQAt:      time.Now(),
+		WebhookResponse:   webhookResponse,
+		CreatedAt:         time.Now(),
+	}
+
+	m.deadLetterMessages = append(m.deadLetterMessages, dlqMsg)
+
+	// Update original message status
+	if msg, exists := m.messages[message.ID]; exists {
+		msg.Status = domain.StatusDeadLetter
+		msg.UpdatedAt = time.Now()
+	}
+
+	return nil
+}
+
+func (m *MockMessageRepository) GetDeadLetterMessages(ctx context.Context, offset, limit int) ([]*domain.DeadLetterMessage, error) {
+	if m.GetDeadLetterMessagesFunc != nil {
+		return m.GetDeadLetterMessagesFunc(ctx, offset, limit)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Simple pagination
+	start := offset
+	end := offset + limit
+	if start > len(m.deadLetterMessages) {
+		return []*domain.DeadLetterMessage{}, nil
+	}
+	if end > len(m.deadLetterMessages) {
+		end = len(m.deadLetterMessages)
+	}
+
+	return m.deadLetterMessages[start:end], nil
 }
 
 // MockCacheRepository is a mock implementation of CacheRepository for testing

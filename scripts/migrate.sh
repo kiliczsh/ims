@@ -86,6 +86,7 @@ print_success "Migration history table ready"
 migrations=(
     "001_create_messages.sql"
     "002_create_audit_logs.sql"
+    "003_create_dead_letter_queue.sql"
 )
 
 for migration in "${migrations[@]}"; do

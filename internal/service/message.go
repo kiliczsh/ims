@@ -47,20 +47,29 @@ func NewMessageService(
 
 func (s *MessageService) ProcessMessages(ctx context.Context, batchSize int) error {
 	// Fetch unsent messages
-	messages, err := s.repo.GetUnsentMessages(ctx, batchSize)
+	unsentMessages, err := s.repo.GetUnsentMessages(ctx, batchSize)
 	if err != nil {
 		return fmt.Errorf("failed to get unsent messages: %w", err)
 	}
 
-	if len(messages) == 0 {
-		log.Println("No pending messages to process")
+	// Fetch retryable messages (failed messages ready for retry)
+	retryableMessages, err := s.repo.GetRetryableMessages(ctx, batchSize)
+	if err != nil {
+		return fmt.Errorf("failed to get retryable messages: %w", err)
+	}
+
+	// Combine both message types
+	allMessages := append(unsentMessages, retryableMessages...)
+
+	if len(allMessages) == 0 {
+		log.Println("No pending or retryable messages to process")
 		return nil
 	}
 
-	log.Printf("Processing %d messages", len(messages))
+	log.Printf("Processing %d messages (%d new, %d retries)", len(allMessages), len(unsentMessages), len(retryableMessages))
 
 	// Process each message
-	for _, msg := range messages {
+	for _, msg := range allMessages {
 		if err := s.sendMessage(ctx, msg); err != nil {
 			log.Printf("Failed to send message %s: %v", msg.ID, err)
 			// Continue with other messages even if one fails
@@ -75,7 +84,8 @@ func (s *MessageService) sendMessage(ctx context.Context, msg *domain.Message) e
 	// Validate message content length
 	if len(msg.Content) > s.maxLength {
 		log.Printf("Message %s exceeds maximum length (%d > %d)", msg.ID, len(msg.Content), s.maxLength)
-		return s.repo.UpdateMessageStatus(ctx, msg.ID, domain.StatusFailed, nil)
+		// Move directly to dead letter queue for validation failures
+		return s.repo.MoveToDeadLetterQueue(ctx, msg, "Message content exceeds maximum length", nil)
 	}
 
 	// Update status to sending
@@ -83,17 +93,12 @@ func (s *MessageService) sendMessage(ctx context.Context, msg *domain.Message) e
 		return fmt.Errorf("failed to update message status to sending: %w", err)
 	}
 
-	log.Printf("Sending message %s to %s", msg.ID, msg.PhoneNumber)
+	log.Printf("Sending message %s to %s (attempt %d)", msg.ID, msg.PhoneNumber, msg.RetryCount+1)
 
 	// Send via webhook
 	resp, err := s.webhook.Send(ctx, msg.PhoneNumber, msg.Content)
 	if err != nil {
-		log.Printf("Failed to send webhook for message %s: %v", msg.ID, err)
-		// Update status to failed
-		if updateErr := s.repo.UpdateMessageStatus(ctx, msg.ID, domain.StatusFailed, nil); updateErr != nil {
-			log.Printf("Failed to update message status to failed: %v", updateErr)
-		}
-		return err
+		return s.handleSendFailure(ctx, msg, err, nil)
 	}
 
 	log.Printf("Message %s sent successfully, webhook response ID: %s", msg.ID, resp.MessageID)
@@ -121,6 +126,34 @@ func (s *MessageService) sendMessage(ctx context.Context, msg *domain.Message) e
 	return nil
 }
 
+// handleSendFailure implements exponential backoff retry logic and dead letter queue
+func (s *MessageService) handleSendFailure(ctx context.Context, msg *domain.Message, sendErr error, webhookResponse *string) error {
+	const maxRetries = 5 // Maximum retry attempts before moving to DLQ
+
+	newRetryCount := msg.RetryCount + 1
+	failureReason := fmt.Sprintf("webhook failed: %v", sendErr)
+
+	log.Printf("Message %s failed on attempt %d: %v", msg.ID, newRetryCount, sendErr)
+
+	// Check if we've exceeded max retries
+	if newRetryCount >= maxRetries {
+		log.Printf("Message %s exceeded max retries (%d), moving to dead letter queue", msg.ID, maxRetries)
+		return s.repo.MoveToDeadLetterQueue(ctx, msg,
+			fmt.Sprintf("exceeded max retries (%d): %s", maxRetries, failureReason),
+			webhookResponse)
+	}
+
+	// Calculate next retry time with exponential backoff
+	// Retry delays: 1m, 4m, 9m, 16m, 25m
+	backoffMinutes := newRetryCount * newRetryCount
+	nextRetryAt := time.Now().Add(time.Duration(backoffMinutes) * time.Minute)
+
+	log.Printf("Message %s will be retried in %d minutes at %v", msg.ID, backoffMinutes, nextRetryAt.Format("15:04:05"))
+
+	// Update message with retry information
+	return s.repo.UpdateMessageRetry(ctx, msg.ID, newRetryCount, &nextRetryAt, &failureReason)
+}
+
 func (s *MessageService) GetSentMessages(ctx context.Context, page, pageSize int) ([]*domain.Message, error) {
 	if page < 1 {
 		page = 1
@@ -131,6 +164,18 @@ func (s *MessageService) GetSentMessages(ctx context.Context, page, pageSize int
 
 	offset := (page - 1) * pageSize
 	return s.repo.GetSentMessages(ctx, offset, pageSize)
+}
+
+func (s *MessageService) GetDeadLetterMessages(ctx context.Context, page, pageSize int) ([]*domain.DeadLetterMessage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	offset := (page - 1) * pageSize
+	return s.repo.GetDeadLetterMessages(ctx, offset, pageSize)
 }
 
 func (s *MessageService) CreateMessage(ctx context.Context, phoneNumber, content string) (*domain.Message, error) {

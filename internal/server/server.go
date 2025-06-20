@@ -48,6 +48,7 @@ func NewServer(
 	mux.Handle("/api/control", middleware.LoggingMiddleware(authMiddleware(http.HandlerFunc(controlHandler.Handle))))
 	mux.Handle("/api/messages", middleware.LoggingMiddleware(authMiddleware(http.HandlerFunc(messageHandler.CreateMessage))))
 	mux.Handle("/api/messages/sent", middleware.LoggingMiddleware(authMiddleware(http.HandlerFunc(messageHandler.GetSentMessages))))
+	mux.Handle("/api/messages/dead-letter", middleware.LoggingMiddleware(authMiddleware(http.HandlerFunc(messageHandler.GetDeadLetterMessages))))
 
 	// Audit routes
 	mux.Handle("/api/audit", middleware.LoggingMiddleware(authMiddleware(http.HandlerFunc(auditHandler.GetAuditLogs))))

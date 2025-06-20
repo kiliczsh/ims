@@ -44,7 +44,12 @@ func (w *WebhookClient) Send(ctx context.Context, phoneNumber, content string) (
 	// Retry logic with exponential backoff
 	for attempt := 0; attempt <= w.maxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(attempt) * time.Second
+			// Exponential backoff: 1s, 4s, 9s, 16s, etc. (attempt^2)
+			backoffSeconds := attempt * attempt
+			backoff := time.Duration(backoffSeconds) * time.Second
+
+			log.Printf("Webhook attempt %d failed, retrying in %v", attempt, backoff)
+
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -54,9 +59,13 @@ func (w *WebhookClient) Send(ctx context.Context, phoneNumber, content string) (
 
 		err := w.doRequest(ctx, req, &resp)
 		if err == nil {
+			if attempt > 0 {
+				log.Printf("Webhook succeeded on attempt %d", attempt+1)
+			}
 			return &resp, nil
 		}
 		lastErr = err
+		log.Printf("Webhook attempt %d failed: %v", attempt+1, err)
 	}
 
 	return nil, fmt.Errorf("failed after %d attempts: %w", w.maxRetries+1, lastErr)

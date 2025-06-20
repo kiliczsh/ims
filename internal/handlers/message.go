@@ -105,11 +105,67 @@ func (h *MessageHandler) CreateMessage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetDeadLetterMessages retrieves dead letter messages with pagination
+// @Summary      Get Dead Letter Messages
+// @Description  Retrieve a paginated list of messages that failed permanently and were moved to the dead letter queue
+// @Tags         messages
+// @Accept       json
+// @Produce      json
+// @Param        page      query     int  false  "Page number (default: 1)"  minimum(1)
+// @Param        page_size query     int  false  "Page size (default: 20, max: 100)"  minimum(1)  maximum(100)
+// @Success      200       {object}  DeadLetterMessagesResponse
+// @Failure      500       {object}  ErrorResponse
+// @Security     ApiKeyAuth
+// @Router       /messages/dead-letter [get]
+func (h *MessageHandler) GetDeadLetterMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse query parameters
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	messages, err := h.service.GetDeadLetterMessages(r.Context(), page, pageSize)
+	if err != nil {
+		http.Error(w, "Failed to retrieve dead letter messages", http.StatusInternalServerError)
+		return
+	}
+
+	resp := DeadLetterMessagesResponse{
+		Messages: messages,
+		Page:     page,
+		PageSize: pageSize,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("Error encoding JSON response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
 // SentMessagesResponse represents a paginated list of sent messages
 type SentMessagesResponse struct {
 	Messages []*domain.SentMessageResponse `json:"messages"`
 	Page     int                           `json:"page" example:"1"`
 	PageSize int                           `json:"page_size" example:"20"`
+}
+
+// DeadLetterMessagesResponse represents a paginated list of dead letter messages
+type DeadLetterMessagesResponse struct {
+	Messages []*domain.DeadLetterMessage `json:"messages"`
+	Page     int                         `json:"page" example:"1"`
+	PageSize int                         `json:"page_size" example:"20"`
 }
 
 // GetSentMessages retrieves sent messages with pagination

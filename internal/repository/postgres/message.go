@@ -22,9 +22,69 @@ func NewMessageRepository(db *sql.DB) repository.MessageRepository {
 	return &messageRepository{db: db}
 }
 
+// scanMessagesFromRows is a helper function to scan multiple messages from rows
+func (r *messageRepository) scanMessagesFromRows(rows *sql.Rows) ([]*domain.Message, error) {
+	var messages []*domain.Message
+	for rows.Next() {
+		msg := &domain.Message{}
+		err := rows.Scan(
+			&msg.ID,
+			&msg.PhoneNumber,
+			&msg.Content,
+			&msg.Status,
+			&msg.MessageID,
+			&msg.RetryCount,
+			&msg.LastRetryAt,
+			&msg.NextRetryAt,
+			&msg.FailureReason,
+			&msg.CreatedAt,
+			&msg.SentAt,
+			&msg.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+
+	return messages, nil
+}
+
+// scanSingleMessageFromRow is a helper function to scan a single message from a row
+func (r *messageRepository) scanSingleMessageFromRow(row *sql.Row) (*domain.Message, error) {
+	msg := &domain.Message{}
+	err := row.Scan(
+		&msg.ID,
+		&msg.PhoneNumber,
+		&msg.Content,
+		&msg.Status,
+		&msg.MessageID,
+		&msg.RetryCount,
+		&msg.LastRetryAt,
+		&msg.NextRetryAt,
+		&msg.FailureReason,
+		&msg.CreatedAt,
+		&msg.SentAt,
+		&msg.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, domain.ErrMessageNotFound
+		}
+		return nil, fmt.Errorf("failed to scan message: %w", err)
+	}
+
+	return msg, nil
+}
+
 func (r *messageRepository) GetUnsentMessages(ctx context.Context, limit int) ([]*domain.Message, error) {
 	query := `
-		SELECT id, phone_number, content, status, message_id, retry_count, created_at, sent_at, updated_at
+		SELECT id, phone_number, content, status, message_id, retry_count, last_retry_at, next_retry_at, failure_reason, created_at, sent_at, updated_at
 		FROM messages 
 		WHERE status = 'pending'
 		ORDER BY created_at ASC
@@ -37,31 +97,7 @@ func (r *messageRepository) GetUnsentMessages(ctx context.Context, limit int) ([
 	}
 	defer rows.Close()
 
-	var messages []*domain.Message
-	for rows.Next() {
-		msg := &domain.Message{}
-		err := rows.Scan(
-			&msg.ID,
-			&msg.PhoneNumber,
-			&msg.Content,
-			&msg.Status,
-			&msg.MessageID,
-			&msg.RetryCount,
-			&msg.CreatedAt,
-			&msg.SentAt,
-			&msg.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan message: %w", err)
-		}
-		messages = append(messages, msg)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows iteration error: %w", err)
-	}
-
-	return messages, nil
+	return r.scanMessagesFromRows(rows)
 }
 
 func (r *messageRepository) UpdateMessageStatus(ctx context.Context, id uuid.UUID, status domain.MessageStatus, messageID *string) error {
@@ -103,7 +139,7 @@ func (r *messageRepository) UpdateMessageStatus(ctx context.Context, id uuid.UUI
 
 func (r *messageRepository) GetSentMessages(ctx context.Context, offset, limit int) ([]*domain.Message, error) {
 	query := `
-		SELECT id, phone_number, content, status, message_id, retry_count, created_at, sent_at, updated_at
+		SELECT id, phone_number, content, status, message_id, retry_count, last_retry_at, next_retry_at, failure_reason, created_at, sent_at, updated_at
 		FROM messages 
 		WHERE status = 'sent'
 		ORDER BY sent_at DESC
@@ -116,61 +152,18 @@ func (r *messageRepository) GetSentMessages(ctx context.Context, offset, limit i
 	}
 	defer rows.Close()
 
-	var messages []*domain.Message
-	for rows.Next() {
-		msg := &domain.Message{}
-		err := rows.Scan(
-			&msg.ID,
-			&msg.PhoneNumber,
-			&msg.Content,
-			&msg.Status,
-			&msg.MessageID,
-			&msg.RetryCount,
-			&msg.CreatedAt,
-			&msg.SentAt,
-			&msg.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan message: %w", err)
-		}
-		messages = append(messages, msg)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows iteration error: %w", err)
-	}
-
-	return messages, nil
+	return r.scanMessagesFromRows(rows)
 }
 
 func (r *messageRepository) GetMessage(ctx context.Context, id uuid.UUID) (*domain.Message, error) {
 	query := `
-		SELECT id, phone_number, content, status, message_id, retry_count, created_at, sent_at, updated_at
+		SELECT id, phone_number, content, status, message_id, retry_count, last_retry_at, next_retry_at, failure_reason, created_at, sent_at, updated_at
 		FROM messages 
 		WHERE id = $1
 	`
 
-	msg := &domain.Message{}
-	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&msg.ID,
-		&msg.PhoneNumber,
-		&msg.Content,
-		&msg.Status,
-		&msg.MessageID,
-		&msg.RetryCount,
-		&msg.CreatedAt,
-		&msg.SentAt,
-		&msg.UpdatedAt,
-	)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, domain.ErrMessageNotFound
-		}
-		return nil, fmt.Errorf("failed to get message: %w", err)
-	}
-
-	return msg, nil
+	row := r.db.QueryRowContext(ctx, query, id)
+	return r.scanSingleMessageFromRow(row)
 }
 
 func (r *messageRepository) CreateMessage(ctx context.Context, message *domain.Message) error {
@@ -216,6 +209,138 @@ func (r *messageRepository) CreateMessage(ctx context.Context, message *domain.M
 	}
 
 	return nil
+}
+
+func (r *messageRepository) GetRetryableMessages(ctx context.Context, limit int) ([]*domain.Message, error) {
+	query := `
+		SELECT id, phone_number, content, status, message_id, retry_count, last_retry_at, next_retry_at, failure_reason, created_at, sent_at, updated_at
+		FROM messages 
+		WHERE status = 'failed' AND next_retry_at IS NOT NULL AND next_retry_at <= CURRENT_TIMESTAMP
+		ORDER BY next_retry_at ASC
+		LIMIT $1
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query retryable messages: %w", err)
+	}
+	defer rows.Close()
+
+	return r.scanMessagesFromRows(rows)
+}
+
+func (r *messageRepository) UpdateMessageRetry(ctx context.Context, id uuid.UUID, retryCount int, nextRetryAt *time.Time, failureReason *string) error {
+	query := `
+		UPDATE messages 
+		SET retry_count = $1, last_retry_at = CURRENT_TIMESTAMP, next_retry_at = $2, failure_reason = $3, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $4
+	`
+
+	result, err := r.db.ExecContext(ctx, query, retryCount, nextRetryAt, failureReason, id)
+	if err != nil {
+		return fmt.Errorf("failed to update message retry: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return domain.ErrMessageNotFound
+	}
+
+	return nil
+}
+
+func (r *messageRepository) MoveToDeadLetterQueue(ctx context.Context, message *domain.Message, failureReason string, webhookResponse *string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Insert into dead letter queue
+	dlqQuery := `
+		INSERT INTO dead_letter_messages (id, original_message_id, phone_number, content, retry_count, failure_reason, last_attempt_at, webhook_response)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`
+
+	dlqID := uuid.New()
+	lastAttemptAt := time.Now()
+	if message.LastRetryAt != nil {
+		lastAttemptAt = *message.LastRetryAt
+	}
+
+	_, err = tx.ExecContext(ctx, dlqQuery,
+		dlqID,
+		message.ID,
+		message.PhoneNumber,
+		message.Content,
+		message.RetryCount,
+		failureReason,
+		lastAttemptAt,
+		webhookResponse,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to insert into dead letter queue: %w", err)
+	}
+
+	// Update original message status
+	updateQuery := `
+		UPDATE messages 
+		SET status = $1, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2
+	`
+
+	_, err = tx.ExecContext(ctx, updateQuery, domain.StatusDeadLetter, message.ID)
+	if err != nil {
+		return fmt.Errorf("failed to update message status to dead_letter: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+func (r *messageRepository) GetDeadLetterMessages(ctx context.Context, offset, limit int) ([]*domain.DeadLetterMessage, error) {
+	query := `
+		SELECT id, original_message_id, phone_number, content, retry_count, failure_reason, last_attempt_at, moved_to_dlq_at, webhook_response, created_at
+		FROM dead_letter_messages
+		ORDER BY moved_to_dlq_at DESC
+		LIMIT $1 OFFSET $2
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query dead letter messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []*domain.DeadLetterMessage
+	for rows.Next() {
+		msg := &domain.DeadLetterMessage{}
+		err := rows.Scan(
+			&msg.ID,
+			&msg.OriginalMessageID,
+			&msg.PhoneNumber,
+			&msg.Content,
+			&msg.RetryCount,
+			&msg.FailureReason,
+			&msg.LastAttemptAt,
+			&msg.MovedToDLQAt,
+			&msg.WebhookResponse,
+			&msg.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan dead letter message: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+
+	return messages, nil
 }
 
 func NewDB(databaseURL string, maxConnections, maxIdleConnections int) (*sql.DB, error) {
